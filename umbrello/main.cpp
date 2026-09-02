@@ -12,11 +12,16 @@
 #include "cmdlineexportallviewsevent.h"
 #include "umlviewimageexportermodel.h"
 #include "umbrellosettings.h"
+#include "codegenerationpolicy.h"
+#include "codegenerator.h"
 
 // kde includes
 #include <KAboutData>
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDir>
+#include <QPalette>
+#include <QStyleFactory>
 #include <KConfig>
 
 #include <KLocalizedString>
@@ -24,10 +29,20 @@
 #include <QUrl>
 
 #include <stdio.h>
+#include <cstring>
 
 DEBUG_REGISTER(main)
 
 void getFiles(QStringList& files, const QString& path, QStringList& filters);
+
+static bool argvHasFlag(int argc, char **argv, const char *flag)
+{
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], flag) == 0)
+            return true;
+    }
+    return false;
+}
 
 /**
  * Determines if the application GUI should be shown based on command line arguments.
@@ -38,7 +53,9 @@ void getFiles(QStringList& files, const QString& path, QStringList& filters);
  */
 bool showGUI(const QCommandLineParser *args)
 {
-    if (args->values(QStringLiteral("export")).size() > 0 || args->isSet(QStringLiteral("export-formats"))) {
+    if (args->values(QStringLiteral("export")).size() > 0
+        || args->isSet(QStringLiteral("export-formats"))
+        || args->isSet(QStringLiteral("generate-code"))) {
         return false;
     }
     return true;
@@ -106,9 +123,77 @@ void exportAllViews(const QString &extension, QUrl directory, bool useFolders)
     qApp->postEvent(UMLApp::app(), new CmdLineExportAllViewsEvent(extension, directory, useFolders));
 }
 
+/**
+ * Generate source for the loaded model using the existing C++ language writers
+ * (PythonWriter, JavaWriter, CppWriter, ...). Headless: overwrite existing
+ * files and do not open OverwriteDialog.
+ */
+int generateAllCode(Uml::ProgrammingLanguage::Enum lang, const QString &directory)
+{
+    if (lang == Uml::ProgrammingLanguage::Reserved) {
+        fprintf(stderr, "umbrello: --generate-code requires --set-language\n");
+        return 1;
+    }
+
+    QDir outDir(directory);
+    if (!outDir.exists() && !outDir.mkpath(QStringLiteral("."))) {
+        fprintf(stderr, "umbrello: cannot create output directory %s\n", qPrintable(directory));
+        return 1;
+    }
+
+    UMLApp *umlApp = UMLApp::app();
+    umlApp->setActiveLanguage(lang);
+    CodeGenerationPolicy *policy = umlApp->commonPolicy();
+    policy->setOverwritePolicy(CodeGenerationPolicy::Ok);
+    policy->setOutputDirectory(outDir);
+
+    CodeGenerator *generator = umlApp->generator();
+    if (!generator) {
+        fprintf(stderr, "umbrello: no code generator for %s\n",
+                qPrintable(Uml::ProgrammingLanguage::toString(lang)));
+        return 1;
+    }
+
+    generator->writeCodeToFile();
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
+    if (argvHasFlag(argc, argv, "--generate-code")
+        || argvHasFlag(argc, argv, "--export")
+        || argvHasFlag(argc, argv, "--export-formats")
+        || argvHasFlag(argc, argv, "--languages")) {
+        if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+            qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+
     QApplication app(argc, argv);
+    {
+        QStyle *fusion = QStyleFactory::create(QStringLiteral("Fusion"));
+        if (fusion)
+            QApplication::setStyle(fusion);
+        QPalette p;
+        const QColor bg(0x12, 0x12, 0x14);
+        const QColor base(0x0a, 0x0a, 0x0c);
+        const QColor text(0xe2, 0xe8, 0xf0);
+        const QColor btn(0x1e, 0x1e, 0x24);
+        const QColor hi(0x38, 0xb6, 0xff);
+        p.setColor(QPalette::Window, bg);
+        p.setColor(QPalette::WindowText, text);
+        p.setColor(QPalette::Base, base);
+        p.setColor(QPalette::AlternateBase, QColor(0x1a, 0x1a, 0x1e));
+        p.setColor(QPalette::Text, text);
+        p.setColor(QPalette::Button, btn);
+        p.setColor(QPalette::ButtonText, text);
+        p.setColor(QPalette::Highlight, hi);
+        p.setColor(QPalette::HighlightedText, Qt::black);
+        p.setColor(QPalette::ToolTipBase, btn);
+        p.setColor(QPalette::ToolTipText, text);
+        p.setColor(QPalette::Link, hi);
+        p.setColor(QPalette::PlaceholderText, QColor(0x64, 0x74, 0x8b));
+        app.setPalette(p);
+    }
     KCrash::initialize();
     KLocalizedString::setApplicationDomain("umbrello");
     Q_INIT_RESOURCE(ui);
@@ -167,6 +252,9 @@ int main(int argc, char *argv[])
     parser.addOption(importDir);
     QCommandLineOption setProgLang(QStringLiteral("set-language"), i18n("set language"), QStringLiteral("proglang"));
     parser.addOption(setProgLang);
+    QCommandLineOption generateCode(QStringLiteral("generate-code"),
+                                    i18n("generate source from the model and exit"));
+    parser.addOption(generateCode);
 
     parser.process(app);
     aboutData.processCommandLine(&parser);
@@ -221,6 +309,10 @@ int main(int argc, char *argv[])
 
         QStringList args;
         args = parsedArgs->positionalArguments();
+        if (parsedArgs->isSet(QStringLiteral("generate-code")) && args.isEmpty()) {
+            fprintf(stderr, "umbrello: --generate-code requires an XMI/UML file\n");
+            return 2;
+        }
         if (parsedArgs->isSet(QStringLiteral("import-files")) && args.count() > 0) {
             uml->newDocument();
             if (lang != Uml::ProgrammingLanguage::Reserved)
@@ -240,6 +332,13 @@ int main(int argc, char *argv[])
         }
         else {
             initDocument(args, lang);
+        }
+
+        if (parsedArgs->isSet(QStringLiteral("generate-code"))) {
+            QString directory = QDir::currentPath();
+            if (parsedArgs->isSet(QStringLiteral("directory")))
+                directory = parsedArgs->value(QStringLiteral("directory"));
+            return generateAllCode(lang, directory);
         }
 
         // Handle diagram export related options
