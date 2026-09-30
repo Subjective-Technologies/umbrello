@@ -85,9 +85,13 @@ AssociationWidget::AssociationWidget(UMLScene *scene)
     // which does not call the virtual methods from this class.
     setLineColor(lineColor());
     setLineWidth(lineWidth());
+    applyDefaultStroke();
 
     setFlag(QGraphicsLineItem::ItemIsSelectable);
     setAcceptHoverEvents(true);
+    // Above classifier widgets (z=2) so line ends and arrows are not covered
+    // by the node fill at the attach point.
+    setZValue(3);
 }
 
 /**
@@ -707,6 +711,9 @@ bool AssociationWidget::activate(IDChangeLog *changeLog)
         // doing so destroys manual adjustments to associationLine end points.
         calculateEndingPoints();
     }
+    // Always glue first/last points to the role widgets' visual outline.
+    // Loaded XMI may store ends that stop short of the nodes.
+    snapEndsToWidgets();
 
     if (AssocRules::allowRole(type)) {
         for (unsigned r = RoleType::A; r <= RoleType::B; ++r) {
@@ -1686,6 +1693,7 @@ void AssociationWidget::calculateEndingPoints()
     AssociationWidgetList assocList(m_scene->associationList());
     updateAssociations(m_role[RoleType::A].umlWidget, assocList);
     updateAssociations(m_role[RoleType::B].umlWidget, assocList);
+    snapEndsToWidgets();
     computeAssocClassLine();
 }
 
@@ -2510,12 +2518,9 @@ void AssociationWidget::computeAssocClassLine()
     QLineF possibleAssocLine = QLineF(segmentMidPoint,
                                       m_associationClass->mapRectToScene(m_associationClass->rect()).center());
     QPointF intersectionPoint;
-    QLineF::IntersectType type = intersect(m_associationClass->mapRectToScene(m_associationClass->boundingRect()),
-                                           possibleAssocLine,
-                                           &intersectionPoint);
-    // logDebug2("intersect type=%1 / point=%2", type, intersectionPoint);
-
-    if (type == QLineF::BoundedIntersection) {
+    if (Widget_Utils::firstIntersection(possibleAssocLine,
+                                        sceneShapePolygon(m_associationClass),
+                                        &intersectionPoint)) {
         m_pAssocClassLine->setLine(midSegX, midSegY,
                                    intersectionPoint.x(), intersectionPoint.y());
 
@@ -2807,12 +2812,34 @@ void AssociationWidget::setTextColor(const QColor &color)
 void AssociationWidget::setLineColor(const QColor &color)
 {
     WidgetBase::setLineColor(color);
+    if (hasNeonGlow())
+        return;
     QPen pen = m_associationLine.pen();
     pen.setColor(color);
     m_associationLine.setPen(pen);
     if (m_pAssocClassLine) {
         m_pAssocClassLine->setPen(pen);
     }
+}
+
+void AssociationWidget::setNeonGlowColor(const QColor &color)
+{
+    WidgetBase::setNeonGlowColor(color);
+    QPen pen = m_associationLine.pen();
+    if (color.isValid()) {
+        pen.setColor(color);
+        setZValue(8);
+        m_associationLine.setZValue(8);
+    } else {
+        QColor restored = lineColor();
+        if (restored.value() < 90)
+            restored = Qt::white;
+        pen.setColor(restored);
+        setZValue(3);
+        m_associationLine.setZValue(0);
+    }
+    m_associationLine.setPen(pen);
+    m_associationLine.update();
 }
 
 void AssociationWidget::setLineWidth(uint width)
@@ -2824,6 +2851,14 @@ void AssociationWidget::setLineWidth(uint width)
     if (m_pAssocClassLine) {
         m_pAssocClassLine->setPen(pen);
     }
+}
+
+void AssociationWidget::applyDefaultStroke()
+{
+    m_usesDiagramLineColor = false;
+    m_usesDiagramLineWidth = false;
+    setLineColor(Qt::white);
+    setLineWidth(2);
 }
 
 bool AssociationWidget::checkAddPoint(const QPointF &scenePos)
@@ -2974,8 +3009,7 @@ QLineF::IntersectType AssociationWidget::intersect(const QRectF &rect, const QLi
 
 bool AssociationWidget::setStartAndEndPoint(AssociationWidget *assocwidget, UMLWidget *pWidget)
 {
-    const QRectF rect(pWidget->scenePos().x(), pWidget->scenePos().y(),
-                      pWidget->width(), pWidget->height());
+    const QPolygonF poly = sceneShapePolygon(pWidget);
 
     AssociationWidgetRole& roleA = assocwidget->m_role[RoleType::A];
     AssociationWidgetRole& roleB = assocwidget->m_role[RoleType::B];
@@ -3031,7 +3065,7 @@ bool AssociationWidget::setStartAndEndPoint(AssociationWidget *assocwidget, UMLW
               startsAtOther, pointIsAuthoritative, refpoint.x(), refpoint.y());
 #endif
     QPointF intercept;
-    if (! findIntercept(rect, refpoint, intercept)) {
+    if (! findIntercept(poly, refpoint, intercept)) {
         logWarn3("AssociationWidget::setStartAndEndPoint error from findIntercept for "
                  "assocType=%1 pWidget=%2 otherWidget=%3",
                  assocwidget->associationType(), pWidget->name(), otherWidget->name());
@@ -3043,8 +3077,7 @@ bool AssociationWidget::setStartAndEndPoint(AssociationWidget *assocwidget, UMLW
     //--------------------------------------------------------------------------------
     // Determine intercept at other widget if this is a straight connecting line
     // without waypoint (pointIsAuthoritative is false).
-    const QRectF otherRect(otherWidget->scenePos().x(), otherWidget->scenePos().y(),
-                           otherWidget->width(), otherWidget->height());
+    const QPolygonF otherPoly = sceneShapePolygon(otherWidget);
     int otherPtIndex = linepath.count() - 1;
     QPointF otherRefpoint;
     if (startsAtOther) {
@@ -3053,7 +3086,7 @@ bool AssociationWidget::setStartAndEndPoint(AssociationWidget *assocwidget, UMLW
     } else {
         otherRefpoint = linepath.point(0);
     }
-    if (findIntercept(otherRect, otherRefpoint, intercept)) {
+    if (findIntercept(otherPoly, otherRefpoint, intercept)) {
         linepath.setPoint(otherPtIndex, intercept);
     } else {
         logWarn3("AssociationWidget::setStartAndEndPoint error from reverse findIntercept for "
@@ -3098,35 +3131,101 @@ void AssociationWidget::updateAssociations(UMLWidget *pWidget, AssociationWidget
 bool AssociationWidget::findIntercept(const QRectF& rect, const QPointF& point,
                                                                QPointF& result)
 {
-    const QPointF rectCenter(rect.center());
-    const QLineF line(rectCenter, point);
-    const QLineF eastSide (rect.bottomLeft(),  rect.topLeft());
-    const QLineF northSide(rect.topLeft(),     rect.topRight());
-    const QLineF westSide (rect.topRight(),    rect.bottomRight());
-    const QLineF southSide(rect.bottomRight(), rect.bottomLeft());
-    QVector<QLineF> edges;
-    edges << eastSide << northSide << westSide << southSide;
-    Uml::Region::Enum xSide = Uml::Region::Error;
-    for (int i = 0; i < 4; i++) {
-        const QLineF& regionLine = edges.at(i);
-        QPointF intersectionPoint;
-        QLineF::IntersectType xType = regionLine.intersects(line, &intersectionPoint);
-        if (xType == QLineF::BoundedIntersection) {
-            result = intersectionPoint;
-            xSide = static_cast<Uml::Region::Enum>(i + 1);
-            break;
-        }
+    QPolygonF poly;
+    poly << rect.topLeft() << rect.topRight() << rect.bottomRight() << rect.bottomLeft() << rect.topLeft();
+    return findIntercept(poly, point, result);
+}
+
+bool AssociationWidget::findIntercept(const QPolygonF& poly, const QPointF& from, QPointF& result)
+{
+    if (poly.size() < 3)
+        return false;
+    const QPointF center = poly.boundingRect().center();
+    QLineF ray(from, center);
+    if (ray.length() < 1e-6)
+        return false;
+    return Widget_Utils::firstIntersection(ray, poly, &result);
+}
+
+QPolygonF AssociationWidget::sceneShapePolygon(UMLWidget *widget)
+{
+    if (!widget)
+        return QPolygonF();
+    const QRectF r = widget->mapRectToScene(widget->rect());
+    QPolygonF rectPoly;
+    rectPoly << r.topLeft() << r.topRight() << r.bottomRight() << r.bottomLeft() << r.topLeft();
+
+    QPainterPath path = widget->shape();
+    if (path.isEmpty())
+        return rectPoly;
+    const QPolygonF mapped = widget->mapToScene(path.toFillPolygon());
+    if (mapped.size() < 3)
+        return rectPoly;
+    // toFillPolygon() can flatten to an outline larger than the painted box;
+    // keep the shape only when it is not bigger than the item rect.
+    const QRectF sb = mapped.boundingRect();
+    if (sb.width() > r.width() + 1.0 || sb.height() > r.height() + 1.0)
+        return rectPoly;
+    return mapped;
+}
+
+bool AssociationWidget::snapOneEnd(UMLWidget *widget, int endIndex, int inwardIndex)
+{
+    if (!widget)
+        return false;
+    AssociationLine& linepath = m_associationLine;
+    if (endIndex < 0 || inwardIndex < 0 ||
+            endIndex >= linepath.count() || inwardIndex >= linepath.count())
+        return false;
+
+    const QPolygonF poly = sceneShapePolygon(widget);
+    const QPointF center = widget->mapToScene(widget->rect().center());
+    const QPointF inward = linepath.point(inwardIndex);
+    const QPointF current = linepath.point(endIndex);
+    QPointF hit;
+    QLineF seg(inward, current);
+    bool ok = false;
+    if (seg.length() >= 0.5)
+        ok = Widget_Utils::firstIntersection(seg, poly, &hit);
+    if (!ok)
+        ok = Widget_Utils::firstIntersection(QLineF(inward, center), poly, &hit);
+    if (!ok)
+        return false;
+
+    // Geometric outline is the pen center; pull onto the stroke so arrow/diamond
+    // tips meet the visible border instead of stopping a few pixels short.
+    QPointF v = center - hit;
+    const qreal len = std::hypot(v.x(), v.y());
+    if (len > 1e-6) {
+        const qreal pull = qMax(qreal(widget->lineWidth()), qreal(1.0)) + 3.0;
+        hit += v * (qMin(pull, len * 0.5) / len);
     }
-#ifdef VERBOSE_DEBUGGING
-    if (xSide != Uml::Region::Error) {
-        logDebug5("AssociationWidget::findIntercept (rect=%1, center=%2, point=%3) : intercept at %4 %5",
-                  ::toString(rect), ::toString(rectCenter), ::toString(point), ::toString(result), Uml::Region::toString(xSide));
+    linepath.setPoint(endIndex, hit);
+    return true;
+}
+
+void AssociationWidget::snapEndsToWidgets()
+{
+    if (isSelf() || associationType() == AssociationType::Exception)
+        return;
+    UMLWidget *wA = m_role[RoleType::A].umlWidget;
+    UMLWidget *wB = m_role[RoleType::B].umlWidget;
+    if (!wA || !wB)
+        return;
+    const int n = m_associationLine.count();
+    if (n < 2)
+        return;
+    // Decide which end belongs to which widget from current geometry.
+    if (linePathStartsAt(wA)) {
+        snapOneEnd(wA, 0, 1);
+        snapOneEnd(wB, n - 1, n - 2);
+    } else if (linePathStartsAt(wB)) {
+        snapOneEnd(wB, 0, 1);
+        snapOneEnd(wA, n - 1, n - 2);
     } else {
-        logDebug4("AssociationWidget::findIntercept (rect=%1, center=%2, point=%3) : no intercept with %4",
-                   ::toString(rect), ::toString(rectCenter), ::toString(point), ::toString(edges));
+        snapOneEnd(wA, 0, 1);
+        snapOneEnd(wB, n - 1, n - 2);
     }
-#endif
-    return (xSide != Uml::Region::Error);
 }
 
 /**
@@ -3712,6 +3811,7 @@ bool AssociationWidget::loadFromXMI(QDomElement& qElement,
         element = node.toElement();
     }
 
+    applyDefaultStroke();
     return true;
 }
 

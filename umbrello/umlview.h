@@ -7,8 +7,11 @@
 #define UMLVIEW_H
 
 #include <QGraphicsView>
+#include <QPoint>
+#include <QRectF>
 
 class QCloseEvent;
+class QContextMenuEvent;
 class QHideEvent;
 class QShowEvent;
 class UMLFolder;
@@ -37,8 +40,11 @@ public:
 
     qreal zoom() const ;
     void setZoom(qreal zoom);
+    void fitSceneRect(const QRectF &sceneRect, qreal minZoom = 10.0,
+                      const QPointF *preferCenter = nullptr);
 
     virtual bool showPropertiesDialog(QWidget *parent = nullptr);
+    void expandSceneRectForPan();
 
 public Q_SLOTS:
     void zoomIn();
@@ -50,8 +56,19 @@ protected:
     virtual void showEvent(QShowEvent *se);
     virtual void hideEvent(QHideEvent *he);
     virtual void mousePressEvent(QMouseEvent* event);
+    virtual void mouseMoveEvent(QMouseEvent* event);
     virtual void mouseReleaseEvent(QMouseEvent* event);
+    virtual void contextMenuEvent(QContextMenuEvent* event);
     virtual void resizeEvent(QResizeEvent *event);
+
+    void beginHandPan(QMouseEvent* event);
+    void endHandPan(QMouseEvent* event);
+
+    bool m_handPanning;
+    bool m_handPanMoved;
+    bool m_openContextMenuOnRelease;
+    QPoint m_handPanStart;
+    QPoint m_handPanScroll;
 };
 
 Q_DECLARE_METATYPE(UMLView*);

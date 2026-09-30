@@ -35,7 +35,13 @@ class LayoutGenerator : public DotGenerator
 public:
     typedef QHash<QString,QRectF> NodeType;
     typedef QList<QPointF> EdgePoints;
-    typedef QHash<QString,EdgePoints> EdgeType;
+    struct LayoutEdge {
+        QString tail;
+        QString head;
+        EdgePoints points;
+        QPointF labelPos;
+    };
+    typedef QList<LayoutEdge> EdgeType;
     typedef QMap<QString,QStringList> ParameterList;
 
     LayoutGenerator();
@@ -54,7 +60,6 @@ protected:
     QRectF m_boundingRect;
     NodeType m_nodes;      ///< list of nodes found in parsed dot file
     EdgeType m_edges;      ///< list of edges found in parsed dot file
-    QHash<QString, QPointF> m_edgeLabelPosition; ///< contains global node parameters
 
     friend QDebug operator<<(QDebug out, LayoutGenerator &c);
 };

@@ -21,6 +21,8 @@
 #include <QImageReader>
 #include <QGraphicsItem>
 #include <QGraphicsRectItem>
+#include <QPainter>
+#include <QPainterPath>
 #include <QPolygonF>
 #include <QXmlStreamWriter>
 
@@ -1072,5 +1074,107 @@ namespace Widget_Utils
         if (appendSpace)
             s.append(QLatin1Char(' '));
         return s;
+    }
+
+    bool firstIntersection(const QLineF &line, const QPolygonF &poly, QPointF *result)
+    {
+        const QPointF origin = line.p1();
+        const QPointF dir = line.p2() - origin;
+        const qreal dirLen2 = QPointF::dotProduct(dir, dir);
+        if (dirLen2 < 1e-12 || poly.size() < 2)
+            return false;
+
+        const int last = poly.size() - (poly.isClosed() ? 1 : 0);
+        qreal bestT = 1.0e99;
+        QPointF best;
+        bool found = false;
+
+        QPointF prev = poly.at(last > 0 ? last - 1 : 0);
+        const int count = last > 0 ? last : poly.size();
+        for (int i = 0; i < count; ++i) {
+            const QPointF curr = poly.at(i);
+            QLineF edge(prev, curr);
+            prev = curr;
+            QPointF ip;
+            if (line.intersects(edge, &ip) == QLineF::NoIntersection)
+                continue;
+
+            const QPointF evec = edge.p2() - edge.p1();
+            const qreal elen2 = QPointF::dotProduct(evec, evec);
+            if (elen2 < 1e-12)
+                continue;
+            const qreal u = QPointF::dotProduct(ip - edge.p1(), evec) / elen2;
+            if (u < -1e-4 || u > 1.0 + 1e-4)
+                continue;
+
+            const qreal t = QPointF::dotProduct(ip - origin, dir) / dirLen2;
+            if (t >= -1e-4 && t < bestT) {
+                bestT = t;
+                best = ip;
+                found = true;
+            }
+        }
+        if (!found || !result)
+            return found;
+        *result = best;
+        return true;
+    }
+
+    QColor neonFromFill(const QColor &fill)
+    {
+        QColor c = fill.isValid() ? fill : QColor(0x38, 0xb6, 0xff);
+        int h = 0, s = 0, v = 0;
+        c.getHsv(&h, &s, &v);
+        if (h < 0)
+            h = 200;
+        if (s < 90)
+            s = 180;
+        else
+            s = qMin(s + 50, 255);
+        v = qMax(v, 230);
+        c.setHsv(h, s, v);
+        return c;
+    }
+
+    QColor contrastOnDark(const QColor &color)
+    {
+        if (!color.isValid() || color.value() < 90)
+            return QColor(0xcb, 0xd5, 0xe1);
+        return color;
+    }
+
+    void paintNeonGlow(QPainter *painter, const QPainterPath &path, const QColor &neon, qreal coreWidth)
+    {
+        if (!painter || path.isEmpty() || !neon.isValid())
+            return;
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setBrush(Qt::NoBrush);
+        painter->setCompositionMode(QPainter::CompositionMode_Plus);
+
+        const qreal widths[] = {20.0, 13.0, 8.0, 4.5};
+        const int alphas[] = {40, 80, 130, 200};
+        for (int i = 0; i < 4; ++i) {
+            QColor g = neon;
+            g.setAlpha(alphas[i]);
+            QPen p(g);
+            p.setWidthF(widths[i]);
+            p.setCapStyle(Qt::RoundCap);
+            p.setJoinStyle(Qt::RoundJoin);
+            painter->setPen(p);
+            painter->drawPath(path);
+        }
+
+        painter->setCompositionMode(QPainter::CompositionMode_SourceOver);
+        QColor core = neon.lighter(145);
+        core.setAlpha(255);
+        QPen cp(core);
+        cp.setWidthF(qMax(coreWidth, 1.6) + 0.9);
+        cp.setCapStyle(Qt::RoundCap);
+        cp.setJoinStyle(Qt::RoundJoin);
+        painter->setPen(cp);
+        painter->drawPath(path);
+        painter->restore();
     }
 }

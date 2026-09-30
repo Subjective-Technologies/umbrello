@@ -11,7 +11,9 @@
 #define DBG_SRC QStringLiteral("LayoutGenerator")
 #include "debug_utils.h"
 #include "floatingtextwidget.h"
+#include "optionstate.h"
 #include "umlapp.h"
+#include "umlscene.h"
 #include "umlwidget.h"
 
 // kde includes
@@ -23,18 +25,23 @@
 #include <QDir>
 #include <QFile>
 #include <QHash>
+#include <QLineF>
+#include <QPainterPath>
+#include <QPainterPathStroker>
 #include <QProcess>
+#include <QRectF>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
 #include <QTemporaryFile>
+#include <QVector>
 //#include <QTextStream>
 
 //#define USE_XDOT
 
 //#define START_PNGVIEWER
 
-#define LAYOUTGENERATOR_DEBUG
+//#define LAYOUTGENERATOR_DEBUG
 //#define LAYOUTGENERATOR_DATA_DEBUG
 
 //#define SHOW_CONTROLPOINTS
@@ -181,6 +188,161 @@ bool LayoutGenerator::generate(UMLScene *scene, const QString &variant)
     return true;
 }
 
+namespace {
+
+Uml::LayoutType::Enum routedEdgeLayout()
+{
+    return Uml::LayoutType::Polyline;
+}
+
+bool pointNearWidget(const QPointF &scenePt, UMLWidget *widget, qreal pad)
+{
+    if (!widget)
+        return false;
+    const QRectF box = widget->mapRectToScene(widget->rect()).adjusted(-pad, -pad, pad, pad);
+    return box.contains(scenePt);
+}
+
+bool endsOnRoleWidgets(AssociationWidget *assoc, qreal pad)
+{
+    if (!assoc)
+        return false;
+    UMLWidget *roleA = assoc->widgetForRole(Uml::RoleType::A);
+    UMLWidget *roleB = assoc->widgetForRole(Uml::RoleType::B);
+    if (!roleA || !roleB)
+        return false;
+    AssociationLine &path = assoc->associationLine();
+    if (path.count() < 2)
+        return false;
+    const QPointF start = path.mapToScene(path.point(0));
+    const QPointF end = path.mapToScene(path.point(path.count() - 1));
+    return (pointNearWidget(start, roleA, pad) && pointNearWidget(end, roleB, pad))
+            || (pointNearWidget(start, roleB, pad) && pointNearWidget(end, roleA, pad));
+}
+
+void reconnectAssociation(AssociationWidget *assoc)
+{
+    if (!assoc)
+        return;
+    UMLWidget *roleA = assoc->widgetForRole(Uml::RoleType::A);
+    UMLWidget *roleB = assoc->widgetForRole(Uml::RoleType::B);
+    if (!roleA || !roleB)
+        return;
+    AssociationLine &path = assoc->associationLine();
+    path.cleanup();
+    if (assoc->isSelf() || assoc->associationType() == Uml::AssociationType::Exception) {
+        assoc->calculateEndingPoints();
+        return;
+    }
+    path.setLayout(Uml::LayoutType::Polyline);
+    path.setEndPoints(roleA->mapToScene(roleA->rect().center()),
+                      roleB->mapToScene(roleB->rect().center()));
+    assoc->snapEndsToWidgets();
+    path.update();
+}
+
+bool lineHitsRect(const QLineF &line, const QRectF &rect)
+{
+    if (rect.contains(line.p1()) || rect.contains(line.p2()))
+        return true;
+    QPainterPath box;
+    box.addRect(rect);
+    QPainterPath lp;
+    lp.moveTo(line.p1());
+    lp.lineTo(line.p2());
+    QPainterPathStroker stroker;
+    stroker.setWidth(6.0);
+    return stroker.createStroke(lp).intersects(box);
+}
+
+bool isRoutingObstacle(UMLWidget *widget, UMLWidget *roleA, UMLWidget *roleB)
+{
+    if (!widget || widget == roleA || widget == roleB)
+        return false;
+    if (widget->isTextWidget() || widget->isPinWidget() || widget->isPortWidget())
+        return false;
+    return widget->width() >= 8 && widget->height() >= 8;
+}
+
+QVector<QPointF> detourAround(const QLineF &seg, const QRectF &obstacle)
+{
+    const QPointF a = seg.p1();
+    const QPointF b = seg.p2();
+    const qreal goLeft = qAbs(a.x() - obstacle.left()) + qAbs(b.x() - obstacle.left());
+    const qreal goRight = qAbs(a.x() - obstacle.right()) + qAbs(b.x() - obstacle.right());
+    const qreal goTop = qAbs(a.y() - obstacle.top()) + qAbs(b.y() - obstacle.top());
+    const qreal goBottom = qAbs(a.y() - obstacle.bottom()) + qAbs(b.y() - obstacle.bottom());
+
+    QVector<QPointF> points;
+    const qreal horiz = qMin(goLeft, goRight);
+    const qreal vert = qMin(goTop, goBottom);
+    if (horiz <= vert) {
+        const qreal x = (goLeft < goRight) ? obstacle.left() - 2.0 : obstacle.right() + 2.0;
+        points << QPointF(x, a.y()) << QPointF(x, b.y());
+    } else {
+        const qreal y = (goTop < goBottom) ? obstacle.top() - 2.0 : obstacle.bottom() + 2.0;
+        points << QPointF(a.x(), y) << QPointF(b.x(), y);
+    }
+    return points;
+}
+
+void rerouteEdgesAroundWidgets(UMLScene *scene)
+{
+    const int widgetCount = scene->widgetList().count();
+    if (widgetCount > 60)
+        return;
+
+    const qreal pad = 28.0;
+    const int maxPasses = widgetCount > 30 ? 3 : 8;
+    for (AssociationWidget *assoc : scene->associationList()) {
+        if (!assoc || assoc->isSelf() ||
+                assoc->associationType() == Uml::AssociationType::Exception)
+            continue;
+        UMLWidget *roleA = assoc->widgetForRole(Uml::RoleType::A);
+        UMLWidget *roleB = assoc->widgetForRole(Uml::RoleType::B);
+        AssociationLine &path = assoc->associationLine();
+        if (path.count() < 2)
+            continue;
+
+        bool changed = false;
+        for (int guard = 0; guard < maxPasses; ++guard) {
+            bool inserted = false;
+            for (int i = 0; i < path.count() - 1; ++i) {
+                const QLineF seg(path.mapToScene(path.point(i)),
+                                 path.mapToScene(path.point(i + 1)));
+                if (seg.length() < 2.0)
+                    continue;
+                for (UMLWidget *widget : scene->widgetList()) {
+                    if (!isRoutingObstacle(widget, roleA, roleB))
+                        continue;
+                    const QRectF box = widget->mapRectToScene(widget->rect()).adjusted(-pad, -pad, pad, pad);
+                    if (!lineHitsRect(seg, box))
+                        continue;
+                    const QVector<QPointF> extra = detourAround(seg, box);
+                    if (extra.size() < 2)
+                        continue;
+                    path.setLayout(Uml::LayoutType::Polyline);
+                    path.insertPoint(i + 1, path.mapFromScene(extra.at(0)));
+                    path.insertPoint(i + 2, path.mapFromScene(extra.at(1)));
+                    inserted = true;
+                    changed = true;
+                    break;
+                }
+                if (inserted)
+                    break;
+            }
+            if (!inserted)
+                break;
+        }
+        if (changed) {
+            assoc->snapEndsToWidgets();
+            path.update();
+        }
+    }
+}
+
+} // namespace
+
 /**
  * apply auto layout to the given scene
  * @param scene
@@ -188,80 +350,13 @@ bool LayoutGenerator::generate(UMLScene *scene, const QString &variant)
  */
 bool LayoutGenerator::apply(UMLScene *scene)
 {
-    for(AssociationWidget *assoc : scene->associationList()) {
-        AssociationLine& path = assoc->associationLine();
-        QString type = Uml::AssociationType::toString(assoc->associationType()).toLower();
-        QString key = QStringLiteral("type::") + type;
-
-        QString id;
-        if (m_edgeParameters.contains(QStringLiteral("id::") + key) && m_edgeParameters[QStringLiteral("id::") + key] == QStringLiteral("swap"))
-            id = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(Uml::RoleType::A)) + Uml::ID::toString(assoc->widgetLocalIDForRole(Uml::RoleType::B)));
-        else
-            id = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(Uml::RoleType::B)) + Uml::ID::toString(assoc->widgetLocalIDForRole(Uml::RoleType::A)));
-
-        // adjust associations not used in the dot file
-        if (!m_edges.contains(id)) {
-            // shorten line path
-            if (path.count() > 2 && assoc->widgetLocalIDForRole(Uml::RoleType::A) != assoc->widgetLocalIDForRole(Uml::RoleType::B)) {
-                while (path.count() > 2)
-                    path.removePoint(1);
-            }
-            continue;
-        }
-
-        // set label position
-        QPointF &l = m_edgeLabelPosition[id];
-        FloatingTextWidget *tw = assoc->nameWidget();
-        if (tw) {
-            tw->setPos(mapToScene(l));
-        }
-
-        // setup line points
-        EdgePoints &p = m_edges[id];
-        int len = p.size();
-#ifdef SHOW_CONTROLPOINTS
-        QPolygonF pf;
-        QFont f;
-        for (int i=0; i < len; i++) {
-            pf << mapToScene(p[i]);
-            s_path.addText(mapToScene(p[i] + QPointF(5,0)), f, QString::number(i));
-        }
-
-        s_path.addPolygon(pf);
-        s_path.addEllipse(mapToScene(l), 5, 5);
-        s_debugItems->setPath(s_path);
-#endif
-        if (m_version <= 20130928) {
-            path.setLayout(Uml::LayoutType::Direct);
-            path.cleanup();
-            path.setEndPoints(mapToScene(p[0]), mapToScene(p[len-1]));
-        } else {
-            path.setLayout(Settings::optionState().generalState.layoutType);
-            path.cleanup();
-
-            if (Settings::optionState().generalState.layoutType == Uml::LayoutType::Polyline) {
-                for (int i = 0; i < len; i++) {
-                    if (i > 0 && p[i] == p[i-1])
-                        continue;
-                    path.addPoint(mapToScene(p[i]));
-                }
-            } else if(Settings::optionState().generalState.layoutType == Uml::LayoutType::Spline) {
-                for (int i = 0; i < len; i++) {
-                    path.addPoint(mapToScene(p[i]));
-                }
-            } else if (Settings::optionState().generalState.layoutType == Uml::LayoutType::Orthogonal) {
-                for (int i = 0; i < len; i++) {
-                    path.addPoint(mapToScene(p[i]));
-                }
-            } else
-                path.setEndPoints(mapToScene(p[0]), mapToScene(p[len-1]));
-        }
-    }
+    const Uml::LayoutType::Enum edgeLayout = routedEdgeLayout();
+    Settings::optionState().generalState.layoutType = edgeLayout;
 
     UMLApp::app()->beginMacro(i18n("Apply layout"));
 
-    for(UMLWidget *widget : scene->widgetList()) {
-        QString id = Uml::ID::toString(widget->localID());
+    for (UMLWidget *widget : scene->widgetList()) {
+        QString id = fixID(Uml::ID::toString(widget->localID()));
         if (!m_nodes.contains(id))
             continue;
         if (widget->isPortWidget() || widget->isPinWidget())
@@ -276,18 +371,100 @@ bool LayoutGenerator::apply(UMLScene *scene)
         widget->setStartMovePosition(widget->pos());
         widget->setX(p.x());
         widget->setY(p.y()-widget->height());
-        widget->adjustAssocs(widget->x(), widget->y());    // adjust assoc lines
+        widget->adjustAssocs(widget->x(), widget->y());
 
         UMLApp::app()->executeCommand(new Uml::CmdMoveWidget(widget));
     }
     UMLApp::app()->endMacro();
 
-    for(AssociationWidget *assoc : scene->associationList()) {
-        assoc->calculateEndingPoints();
+    QVector<bool> edgeUsed(m_edges.size(), false);
+    auto takeEdge = [&](const QString &tail, const QString &head) -> int {
+        for (int i = 0; i < m_edges.size(); ++i) {
+            if (edgeUsed.at(i))
+                continue;
+            if (m_edges.at(i).tail == tail && m_edges.at(i).head == head)
+                return i;
+        }
+        return -1;
+    };
+
+    for (AssociationWidget *assoc : scene->associationList()) {
+        AssociationLine& path = assoc->associationLine();
+        path.setLayout(edgeLayout);
+
+        UMLWidget *roleA = assoc->widgetForRole(Uml::RoleType::A);
+        UMLWidget *roleB = assoc->widgetForRole(Uml::RoleType::B);
+        if (!roleA || !roleB) {
+            path.cleanup();
+            continue;
+        }
+
+        const QString type = Uml::AssociationType::toString(assoc->associationType()).toLower();
+        const QString key = QStringLiteral("type::") + type;
+        const bool swapId = (m_edgeParameters.value(QStringLiteral("id::") + key) == QStringLiteral("swap"))
+                || (m_edgeParameters.value(QStringLiteral("id::type::default")) == QStringLiteral("swap")
+                    && !m_edgeParameters.contains(QStringLiteral("id::") + key));
+        const bool hierarchyEdge = (type == QStringLiteral("generalization")
+                                    || type == QStringLiteral("realization")
+                                    || type == QStringLiteral("realisation"));
+        const bool useHierarchy = m_classHierarchy
+                || (scene->type() == Uml::DiagramType::Class
+                    && m_generator.toLower() == QStringLiteral("dot"));
+
+        const QString idA = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(Uml::RoleType::A)));
+        const QString idB = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(Uml::RoleType::B)));
+        QString expectTail = swapId ? idA : idB;
+        QString expectHead = swapId ? idB : idA;
+        if (useHierarchy && hierarchyEdge) {
+            expectTail = idB;
+            expectHead = idA;
+        }
+
+        int idx = takeEdge(expectTail, expectHead);
+        if (idx < 0)
+            idx = takeEdge(expectHead, expectTail);
+
+        bool applied = false;
+        if (idx >= 0) {
+            edgeUsed[idx] = true;
+            const LayoutEdge &edge = m_edges.at(idx);
+            const EdgePoints &p = edge.points;
+            const int len = p.size();
+            const bool endsMatch = (len >= 2)
+                    && ((pointNearWidget(mapToScene(p.first()), roleA, 120.0)
+                         && pointNearWidget(mapToScene(p.last()), roleB, 120.0))
+                        || (pointNearWidget(mapToScene(p.first()), roleB, 120.0)
+                            && pointNearWidget(mapToScene(p.last()), roleA, 120.0)));
+            if (endsMatch) {
+                path.cleanup();
+                for (int i = 0; i < len; i++) {
+                    if (i > 0 && p[i] == p[i-1])
+                        continue;
+                    path.addPoint(mapToScene(p[i]));
+                }
+                applied = path.count() >= 2;
+            }
+            if (FloatingTextWidget *tw = assoc->nameWidget()) {
+                if (!edge.labelPos.isNull())
+                    tw->setPos(mapToScene(edge.labelPos));
+            }
+        }
+
+        if (!applied)
+            reconnectAssociation(assoc);
+    }
+
+    for (AssociationWidget *assoc : scene->associationList()) {
+        if (!endsOnRoleWidgets(assoc, 16.0))
+            reconnectAssociation(assoc);
+        else
+            assoc->snapEndsToWidgets();
         assoc->associationLine().update();
         assoc->resetTextPositions();
         assoc->saveIdealTextPositions();
     }
+
+    rerouteEdgesAroundWidgets(scene);
     return true;
 }
 
@@ -359,6 +536,10 @@ bool LayoutGenerator::readGeneratedDotFile(const QString &fileName)
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return false;
 
+    m_nodes.clear();
+    m_edges.clear();
+    m_boundingRect = QRectF();
+
     QTextStream in(&file);
     while (!in.atEnd()) {
         QString line = in.readLine();
@@ -394,23 +575,25 @@ bool LayoutGenerator::parseLine(const QString &line)
                               a[4].toDouble()*m_scale, a[5].toDouble()*m_scale);
         return true;
     } else if (a[0] == QStringLiteral("edge")) {
-        QString key = fixID(a[1]+a[2]);
-        EdgePoints p;
+        if (a.size() < 4)
+            return false;
+        LayoutEdge edge;
+        edge.tail = fixID(a[1]);
+        edge.head = fixID(a[2]);
         int len = a[3].toInt();
-        for(int i = 0; i < len; i++)
-            p.append(QPointF(a[i*2+4].toDouble()*m_scale, a[i*2+5].toDouble()*m_scale));
-        m_edges[key] = p;
-
+        for (int i = 0; i < len && (i * 2 + 5) < a.size(); i++)
+            edge.points.append(QPointF(a[i*2+4].toDouble()*m_scale, a[i*2+5].toDouble()*m_scale));
         int b = len*2 + 4;
-        bool ok;
-        double x = a[b+1].toDouble(&ok);
-        if (!ok)
-            return true;
-        double y = a[b+2].toDouble(&ok);
-        if (!ok)
-            return true;
-        m_edgeLabelPosition[key] = QPointF(x*m_scale, y*m_scale);
-
+        bool ok = false;
+        if (b + 2 < a.size()) {
+            const double x = a[b+1].toDouble(&ok);
+            if (ok) {
+                const double y = a[b+2].toDouble(&ok);
+                if (ok)
+                    edge.labelPos = QPointF(x*m_scale, y*m_scale);
+            }
+        }
+        m_edges.append(edge);
         return true;
     } else if (a[0] == QStringLiteral("stop")) {
         return true;
@@ -538,7 +721,11 @@ bool LayoutGenerator::parseLine(const QString &line)
             QPointF p(b[0].toDouble(), b[1].toDouble());
             points.append(p);
 
-            m_edges[key] = points;
+            LayoutEdge edge;
+            edge.tail = fixID(k[0]);
+            edge.head = fixID(k[2]);
+            edge.points = points;
+            m_edges.append(edge);
         }
         if (0 && attributes.contains(QStringLiteral("_draw_"))) {
             QStringList &a = attributes[QStringLiteral("_draw_")];

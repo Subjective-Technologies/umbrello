@@ -8,6 +8,8 @@
 
 #include "umlwidget.h"
 
+#include <QPainterPath>
+
 class UMLUseCase;
 
 #define UC_MARGIN 5
@@ -41,6 +43,7 @@ public:
     virtual ~UseCaseWidget();
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget = nullptr);
+    virtual QPainterPath shape() const;
 
     // For loading we can use the loadFromXMI() inherited from
     // UMLWidget.

@@ -12,13 +12,16 @@
 #include "widgetbase.h"
 
 #include <QBrush>
+#include <QColor>
 #include <QDomDocument>
+#include <QPainterPath>
 #include <QPointF>
 #include <QLineF>
 #include <QPolygonF>
 
 class QGraphicsItem;
 class QGraphicsRectItem;
+class QPainter;
 class QXmlStreamWriter;
 
 /**
@@ -57,6 +60,17 @@ namespace Widget_Utils
     bool hasSmallerY(const UMLWidget* widget1, const UMLWidget* widget2);
 
     QLineF closestPoints(const QPolygonF& self, const QPolygonF& other);
+
+    /**
+     * Intersect unbounded ray \a line with polygon edges.
+     * Picks the hit with the smallest t >= 0 along the ray (p1 -> p2).
+     * That is the first surface met when travelling from p1 toward p2.
+     */
+    bool firstIntersection(const QLineF &line, const QPolygonF &poly, QPointF *result);
+
+    QColor neonFromFill(const QColor &fill);
+    QColor contrastOnDark(const QColor &color);
+    void paintNeonGlow(QPainter *painter, const QPainterPath &path, const QColor &neon, qreal coreWidth);
 
     QString defaultWidgetName(WidgetBase::WidgetType type);
     QString newTitle(WidgetBase::WidgetType type);

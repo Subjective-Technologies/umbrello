@@ -158,6 +158,7 @@ QString WidgetBase::baseTypeStrWithoutPrefix() const
  */
 void WidgetBase::setSelected(bool select)
 {
+    prepareGeometryChange();
     QGraphicsObjectWrapper::setSelected(select);
 }
 
@@ -608,6 +609,25 @@ void WidgetBase::setHighLighted(bool state)
         update();
 }
 
+void WidgetBase::setNeonGlowColor(const QColor &color)
+{
+    if (m_neonGlowColor == color)
+        return;
+    prepareGeometryChange();
+    m_neonGlowColor = color;
+    update();
+}
+
+QColor WidgetBase::neonGlowColor() const
+{
+    return m_neonGlowColor;
+}
+
+bool WidgetBase::hasNeonGlow() const
+{
+    return m_neonGlowColor.isValid();
+}
+
 /**
  * A virtual method for the widget to display a property dialog box.
  * Subclasses should reimplement this appropriately.
@@ -880,8 +900,17 @@ void WidgetBase::setRect(qreal x, qreal y, qreal width, qreal height)
  */
 QRectF WidgetBase::boundingRect() const
 {
-    qreal halfWidth = lineWidth() / 2.0;
-    return m_rect.adjusted(-halfWidth, -halfWidth, halfWidth, halfWidth);
+    qreal extra = lineWidth() / 2.0;
+    if (isSelected() || hasNeonGlow())
+        extra += 16.0;
+    return m_rect.adjusted(-extra, -extra, extra, extra);
+}
+
+QPainterPath WidgetBase::shape() const
+{
+    QPainterPath path;
+    path.addRect(m_rect);
+    return path;
 }
 
 /**

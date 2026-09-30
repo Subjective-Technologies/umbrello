@@ -113,6 +113,7 @@ public:
     void setGridDotColor(const QColor& color);
 
     const QColor& backgroundColor() const;
+    void applyWorkbenchTheme();
 
     bool snapToGrid() const;
     void setSnapToGrid(bool bSnap);
@@ -189,6 +190,9 @@ public:
     void moveSelectedBy(qreal dX, qreal dY);
 
     int selectedCount(bool filterText = false) const;
+
+    void focusAssociationNeighborhood(UMLWidget *seed);
+    void focusSelectedNeighborhood();
 
     void selectionUseFillColor(bool useFC);
     void selectionSetFont(const QFont &font);
@@ -269,7 +273,9 @@ public:
 
     void clearDiagram();
 
-    void applyLayout(const QString &actionText);
+    void applyLayout(const QString &variant, const QString &engine = QString(),
+                     const QString &splines = QString(), bool classHierarchy = false);
+    void applyAssociationLineLayout(Uml::LayoutType::Enum layout);
 
     void toggleSnapToGrid();
     void toggleSnapComponentSizeToGrid();

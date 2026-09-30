@@ -15,6 +15,7 @@
 #include <QGraphicsObject>
 #include <QObject>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPointer>
 #include <QXmlStreamWriter>
 
@@ -217,6 +218,10 @@ public:
     bool highLighted() const;
     void setHighLighted(bool state);
 
+    virtual void setNeonGlowColor(const QColor &color);
+    QColor neonGlowColor() const;
+    bool hasNeonGlow() const;
+
     virtual bool showPropertiesDialog();
 
     virtual bool loadFromXMI(QDomElement &qElement);
@@ -232,6 +237,7 @@ public:
     void setRect(qreal x, qreal y, qreal width, qreal height);
 
     virtual QRectF boundingRect() const;
+    virtual QPainterPath shape() const;
 
     virtual UMLWidget* onWidget(const QPointF &p);
 
@@ -384,6 +390,7 @@ protected:
     bool m_autoResize;
     bool m_changesShape; ///< The widget changes its shape when the number of connections or their positions are changed
     bool m_highLighted{false};
+    QColor m_neonGlowColor;
 };
 
 #endif

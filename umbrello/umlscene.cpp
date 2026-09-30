@@ -306,6 +306,7 @@ UMLScene::UMLScene(UMLFolder *parentFolder, UMLView *view)
 
     // fix crash caused by Qt stale item issue see https://bugs.kde.org/show_bug.cgi?id=383592
     setItemIndexMethod(NoIndex);
+    applyWorkbenchTheme();
 }
 
 /**
@@ -600,9 +601,7 @@ Settings::OptionState& UMLScene::optionState()
 void UMLScene::setOptionState(const Settings::OptionState& options)
 {
     m_Options = options;
-    if (options.uiState.useBackgroundColor)
-        setBackgroundBrush(options.uiState.backgroundColor);
-    setGridDotColor(options.uiState.gridDotColor);
+    applyWorkbenchTheme();
     if (m_alignmentGuide)
         m_alignmentGuide->setEnabled(options.uiState.useAlignmentGuides);
 }
@@ -1401,6 +1400,17 @@ const QColor& UMLScene::backgroundColor() const
     return backgroundBrush().color();
 }
 
+void UMLScene::applyWorkbenchTheme()
+{
+    const QColor canvas(Qt::black);
+    const QColor grid(0x2a, 0x2a, 0x32);
+    m_Options.uiState.backgroundColor = canvas;
+    m_Options.uiState.useBackgroundColor = true;
+    m_Options.uiState.gridDotColor = grid;
+    setBackgroundBrush(canvas);
+    setGridDotColor(grid);
+}
+
 /**
  * Returns whether to use the fill/background color
  */
@@ -2060,6 +2070,84 @@ int UMLScene::selectedCount(bool filterText) const
         }
     }
     return counter;
+}
+
+static bool isFocusNodeWidget(const UMLWidget *w)
+{
+    return w && !w->isTextWidget() && !w->isPinWidget() && !w->isPortWidget()
+        && !w->isMessageWidget() && !w->isFloatingDashLineWidget();
+}
+
+static void uniteSceneBounds(QRectF &bounds, QGraphicsItem *item)
+{
+    if (!item)
+        return;
+    const QRectF r = item->sceneBoundingRect();
+    if (!r.isValid())
+        return;
+    if (bounds.isValid())
+        bounds = bounds.united(r);
+    else
+        bounds = r;
+}
+
+static void uniteWidgetNeighborhood(QRectF &bounds, UMLWidget *widget)
+{
+    if (!widget)
+        return;
+    uniteSceneBounds(bounds, widget);
+    for (AssociationWidget *assoc : widget->associationWidgetList()) {
+        if (!assoc)
+            continue;
+        uniteSceneBounds(bounds, assoc);
+        uniteSceneBounds(bounds, &assoc->associationLine());
+        uniteSceneBounds(bounds, assoc->nameWidget());
+        for (unsigned role = Uml::RoleType::A; role <= Uml::RoleType::B; ++role) {
+            const Uml::RoleType::Enum r = static_cast<Uml::RoleType::Enum>(role);
+            uniteSceneBounds(bounds, assoc->widgetForRole(r));
+            uniteSceneBounds(bounds, assoc->roleWidget(r));
+            uniteSceneBounds(bounds, assoc->multiplicityWidget(r));
+            uniteSceneBounds(bounds, assoc->changeabilityWidget(r));
+        }
+    }
+}
+
+void UMLScene::focusAssociationNeighborhood(UMLWidget *seed)
+{
+    if (!seed || !m_view)
+        return;
+    QRectF bounds;
+    uniteWidgetNeighborhood(bounds, seed);
+    if (!bounds.isValid())
+        return;
+    const QPointF seedCenter = seed->sceneBoundingRect().center();
+    m_view->fitSceneRect(bounds, 100.0, &seedCenter);
+}
+
+void UMLScene::focusSelectedNeighborhood()
+{
+    if (!m_view)
+        return;
+    QRectF bounds;
+    int nodes = 0;
+    UMLWidget *seed = nullptr;
+    for (UMLWidget *w : selectedWidgets()) {
+        if (!isFocusNodeWidget(w))
+            continue;
+        ++nodes;
+        seed = w;
+        uniteWidgetNeighborhood(bounds, w);
+    }
+    if (nodes == 0) {
+        const QRectF items = itemsBoundingRect();
+        if (items.isValid())
+            m_view->fitSceneRect(items);
+        return;
+    }
+    if (nodes == 1 && seed)
+        focusAssociationNeighborhood(seed);
+    else if (bounds.isValid())
+        m_view->fitSceneRect(bounds, 100.0);
 }
 
 /**
@@ -3551,13 +3639,53 @@ void UMLScene::clearDiagram()
 /**
  * Apply an automatic layout.
  */
-void UMLScene::applyLayout(const QString &variant)
+void UMLScene::applyLayout(const QString &variant, const QString &engine,
+                           const QString &splines, bool classHierarchy)
 {
-    logDebug1("UMLScene::applyLayout: %1", variant);
+    logDebug3("UMLScene::applyLayout: variant=%1 engine=%2 splines=%3", variant, engine, splines);
     LayoutGenerator r;
+    r.setLayoutEngine(engine, splines, classHierarchy);
     r.generate(this, variant);
     r.apply(this);
-    UMLApp::app()->slotZoomFit();
+    const QRectF bounds = itemsBoundingRect();
+    if (m_view)
+        m_view->expandSceneRectForPan();
+    else if (bounds.isValid())
+        setSceneRect(bounds.adjusted(-400.0, -400.0, 400.0, 400.0));
+    else
+        updateSceneRect();
+    if (m_view)
+        m_view->fitSceneRect(bounds.isValid() ? bounds : itemsBoundingRect(), 100.0);
+}
+
+/**
+ * Apply association line routing (direct, orthogonal, spline, polyline)
+ * to the selected associations, or to every association if none are selected.
+ */
+void UMLScene::applyAssociationLineLayout(Uml::LayoutType::Enum layout)
+{
+    if (layout == Uml::LayoutType::Undefined)
+        return;
+
+    Settings::optionState().generalState.layoutType = layout;
+
+    AssociationWidgetList list = selectedAssocs();
+    if (list.isEmpty())
+        list = associationList();
+    if (list.isEmpty())
+        return;
+    UMLApp::app()->beginMacro(i18n("Change line layout"));
+    for (AssociationWidget *assoc : list) {
+        if (!assoc || !assoc->isLayoutChangeable())
+            continue;
+        assoc->associationLine().setLayout(layout);
+        if (layout == Uml::LayoutType::Spline)
+            assoc->associationLine().enableAutoLayout();
+        assoc->calculateEndingPoints();
+        assoc->associationLine().update();
+    }
+    UMLApp::app()->endMacro();
+    m_doc->setModified(true);
 }
 
 /**
@@ -3943,8 +4071,7 @@ bool UMLScene::loadFromXMI(QDomElement & qElement)
     QString localid = qElement.attribute(QStringLiteral("localid"), QStringLiteral("0"));
     // option state
     m_Options.loadFromXMI(qElement);
-    setBackgroundBrush(m_Options.uiState.backgroundColor);
-    setGridDotColor(m_Options.uiState.gridDotColor);
+    applyWorkbenchTheme();
     //misc
     QString showgrid = qElement.attribute(QStringLiteral("showgrid"), QStringLiteral("0"));
     m_layoutGrid->setVisible((bool)showgrid.toInt());

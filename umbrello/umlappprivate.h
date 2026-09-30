@@ -227,6 +227,8 @@ public Q_SLOTS:
     {
         documentationDock = new QDockWidget(i18n("Doc&umentation"), parent);
         documentationDock->setObjectName(QStringLiteral("DocumentationDock"));
+        documentationDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable
+                                      | QDockWidget::DockWidgetFloatable);
         parent->addDockWidget(Qt::LeftDockWidgetArea, documentationDock);
         docWindow = new DocWindow(parent->document(), documentationDock);
         docWindow->setObjectName(QStringLiteral("DOCWINDOW"));
@@ -277,6 +279,8 @@ public Q_SLOTS:
     {
         listDock = new QDockWidget(i18n("&Tree View"), parent);
         listDock->setObjectName(QStringLiteral("TreeViewDock"));
+        listDock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable
+                              | QDockWidget::DockWidgetFloatable);
         parent->addDockWidget(Qt::LeftDockWidgetArea, listDock);
         listView = new UMLListView(listDock);
         //m_listView->setSorting(-1);

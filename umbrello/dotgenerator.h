@@ -10,7 +10,7 @@ class UMLScene;
 #include <QPointF>
 #include <QString>
 
-#define DOTGENERATOR_DEBUG
+//#define DOTGENERATOR_DEBUG
 /**
  * The class DotGenerator provides export of diagrams as dot files.
  *
@@ -34,6 +34,8 @@ public:
 
     static QString currentDotPath();
     void setGeneratorName(const QString &name);
+    void setLayoutEngine(const QString &engine, const QString &splines = QString(),
+                         bool classHierarchy = false);
     QString generatorFullPath() const;
 
 protected:
@@ -48,6 +50,9 @@ protected:
     QHash<QString, QString> m_nodeParameters; ///< contains global node parameters
     QPointF m_origin;
     QString m_generator; ///< name of graphviz generator
+    QString m_overrideGenerator;
+    QString m_overrideSplines;
+    bool m_classHierarchy{false};
     bool m_usePosition; ///< use position tag from dot (not used yet)
     bool m_useFullNodeLabels; ///< use full node labels
     QString m_dotPath;     ///< contains path to generator executable

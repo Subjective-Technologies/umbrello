@@ -58,6 +58,7 @@
 #include <QApplication>
 #include <QColor>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPointer>
 #include <QXmlStreamWriter>
 
@@ -72,6 +73,8 @@ const QSizeF UMLWidget::DefaultMaximumSize(5000, 5000);
 const int UMLWidget::defaultMargin = 5;
 const int UMLWidget::selectionMarkerSize = 4;
 const int UMLWidget::resizeMarkerLineCount = 3;
+
+static bool isNeonNodeWidget(const UMLWidget *w);
 
 
 /**
@@ -553,6 +556,15 @@ void UMLWidget::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
         } else {
             Widget_Utils::ensureNestedVisible(this, umlScene()->widgetList());
         }
+        if (!m_shiftPressed && isSelected() && isNeonNodeWidget(this)) {
+            int nodes = 0;
+            for (UMLWidget *w : m_scene->selectedWidgets()) {
+                if (isNeonNodeWidget(w))
+                    ++nodes;
+            }
+            if (nodes == 1)
+                umlScene()->focusAssociationNeighborhood(this);
+        }
     } else {
         // Commands
         if (m_moved) {
@@ -726,6 +738,10 @@ void UMLWidget::init()
     setMaximumSize(DefaultMaximumSize);
 
     m_font = QApplication::font();
+    if (m_font.pointSize() > 0 && m_font.pointSize() < 11)
+        m_font.setPointSize(11);
+    else if (m_font.pointSize() <= 0 && m_font.pixelSize() > 0 && m_font.pixelSize() < 15)
+        m_font.setPixelSize(15);
     for (int i = (int)FT_INVALID - 1; i >= 0; --i) {
         FontType fontType = (FontType)i;
         setupFontType(m_font, fontType);
@@ -1648,6 +1664,37 @@ void UMLWidget::setSelectionBounds()
 {
 }
 
+static bool isNeonNodeWidget(const UMLWidget *w)
+{
+    if (!w)
+        return false;
+    return !w->isTextWidget() && !w->isPinWidget() && !w->isPortWidget()
+        && !w->isMessageWidget() && !w->isFloatingDashLineWidget();
+}
+
+void UMLWidget::syncAssociationNeon()
+{
+    if (!isNeonNodeWidget(this))
+        return;
+
+    for (AssociationWidget *assoc : associationWidgetList()) {
+        if (!assoc)
+            continue;
+        UMLWidget *roleA = assoc->widgetForRole(RoleType::A);
+        UMLWidget *roleB = assoc->widgetForRole(RoleType::B);
+        UMLWidget *owner = nullptr;
+        if (roleA && roleA->isSelected() && isNeonNodeWidget(roleA))
+            owner = roleA;
+        else if (roleB && roleB->isSelected() && isNeonNodeWidget(roleB))
+            owner = roleB;
+
+        if (owner)
+            assoc->setNeonGlowColor(Widget_Utils::neonFromFill(owner->fillColor()));
+        else
+            assoc->setNeonGlowColor(QColor());
+    }
+}
+
 void UMLWidget::setSelectedFlag(bool _select)
 {
     WidgetBase::setSelected(_select);
@@ -1685,6 +1732,7 @@ void UMLWidget::setSelected(bool _select)
     logDebug1("UMLWidget::setSelected(%1) : Prevent obscuring", _select);
     Widget_Utils::ensureNestedVisible(this, umlScene()->widgetList());
 
+    syncAssociationNeon();
     update();
 
     // selection changed, we have to make sure the copy and paste items
@@ -2001,14 +2049,19 @@ void UMLWidget::setupFontType(QFont &font, UMLWidget::FontType fontType)
 
 void UMLWidget::paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget)
 {
-    Q_UNUSED(option);
     Q_UNUSED(widget);
 
     if (option->state & QStyle::State_Selected) {
+        const QColor neon = Widget_Utils::neonFromFill(fillColor());
+        QPainterPath glowPath = shape();
+        if (glowPath.isEmpty())
+            glowPath.addRoundedRect(rect().adjusted(-1, -1, 1, 1), 3, 3);
+        Widget_Utils::paintNeonGlow(painter, glowPath, neon, 2.2);
+
         const qreal w = width();
         const qreal h = height();
         const qreal s = selectionMarkerSize;
-        QBrush brush(Qt::blue);
+        QBrush brush(neon);
         painter->fillRect(0, 0, s,  s, brush);
         painter->fillRect(0, 0 + h - s, s, s, brush);
         painter->fillRect(0 + w - s, 0, s, s, brush);

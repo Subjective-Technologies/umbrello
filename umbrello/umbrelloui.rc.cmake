@@ -1,5 +1,5 @@
 <!DOCTYPE kpartgui>
-<kpartgui name="umbrello" version="12">
+<kpartgui name="umbrello" version="14">
 <MenuBar>
   <Menu name="file"><text>&amp;File</text>
       <Menu name="file_export"><text>&amp;Export model</text>
@@ -12,6 +12,7 @@
     <Action name="delete_selected"/>
   </Menu>
   <Menu name="view"><text>&amp;View</text>
+    <Action name="view_toggle_left_pane"/>
     <Menu name="view_window"><text>&amp;Show/hide window</text>
       <Action name="view_show_tree"/>
       <Action name="view_show_doc"/>
@@ -55,6 +56,13 @@
       <Action name="align_vertical_distribute" />
       <Action name="align_horizontal_distribute" />
     </Menu>
+    <Menu name="line_layout_menu"><text>&amp;Line Layout</text>
+      <Action name="line_layout_direct" />
+      <Action name="line_layout_orthogonal" />
+      <Action name="line_layout_spline" />
+      <Action name="line_layout_polyline" />
+    </Menu>
+    <Action name="apply_auto_layout"/>
     <Separator/>
     <Action name="view_snap_to_grid"/>
     <Action name="view_show_grid"/>

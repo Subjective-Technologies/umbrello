@@ -14,6 +14,7 @@
 #include "statewidget.h"
 #define DBG_SRC QStringLiteral("DotGenerator")
 #include "debug_utils.h"
+#include "optionstate.h"
 #include "umlapp.h"  // only needed for log{Warn,Error}
 
 // kde includes
@@ -181,6 +182,15 @@ void DotGenerator::setGeneratorName(const QString &name)
               name, generatorFullPath(), m_version);
 }
 
+void DotGenerator::setLayoutEngine(const QString &engine, const QString &splines, bool classHierarchy)
+{
+    m_overrideGenerator = engine;
+    m_overrideSplines = splines;
+    m_classHierarchy = classHierarchy;
+    if (!engine.isEmpty())
+        setGeneratorName(engine);
+}
+
 QString DotGenerator::generatorFullPath() const
 {
     return m_dotPath + QLatin1Char('/') + m_generator;
@@ -261,6 +271,19 @@ bool DotGenerator::availableConfigFiles(UMLScene *scene, QHash<QString, QString>
  * @param variant String identifying the variant
  * @return true on success
  */
+static void setDotGraphAttr(QString &graph, const QString &key, const QString &value)
+{
+    QRegularExpression rx(QStringLiteral("\\b%1\\s*=\\s*[^,]+").arg(key));
+    const QString assignment = key + QLatin1Char('=') + value;
+    if (graph.contains(rx)) {
+        graph.replace(rx, assignment);
+        return;
+    }
+    if (!graph.isEmpty() && !graph.endsWith(QLatin1Char(',')))
+        graph.append(QLatin1Char(','));
+    graph.append(assignment);
+}
+
 bool DotGenerator::readConfigFile(QString diagramType, const QString &variant)
 {
     QStringList fileNames;
@@ -293,9 +316,11 @@ bool DotGenerator::readConfigFile(QString diagramType, const QString &variant)
     KConfigGroup edgesAttributes(&desktopFile,QStringLiteral("X-UMBRELLO-Dot-Edges"));
     KConfigGroup nodesAttributes(&desktopFile,QStringLiteral("X-UMBRELLO-Dot-Nodes"));
     KConfigGroup attributes(&desktopFile,QStringLiteral("X-UMBRELLO-Dot-Attributes"));
+    // Direct chords cut through unrelated nodes. Ask graphviz to route around them.
     QString layoutType = Uml::LayoutType::toString(Settings::optionState().generalState.layoutType);
+    if (layoutType.isEmpty() || layoutType == QStringLiteral("Direct"))
+        layoutType = QStringLiteral("Polyline");
     KConfigGroup layoutAttributes(&desktopFile,QString(QStringLiteral("X-UMBRELLO-Dot-Attributes-%1")).arg(layoutType));
-    // settings are not needed by dotgenerator
     KConfigGroup settings(&desktopFile,QStringLiteral("X-UMBRELLO-Dot-Settings"));
 
     m_edgeParameters.clear();
@@ -341,6 +366,31 @@ bool DotGenerator::readConfigFile(QString diagramType, const QString &variant)
                   value);
 
     setGeneratorName(settings.readEntry("generator", "dot"));
+    if (!m_overrideGenerator.isEmpty())
+        setGeneratorName(m_overrideGenerator);
+
+    QString graph = m_dotParameters.value(QStringLiteral("graph"));
+    setDotGraphAttr(graph, QStringLiteral("splines"), QStringLiteral("true"));
+    setDotGraphAttr(graph, QStringLiteral("ranksep"), QStringLiteral("0.7"));
+    setDotGraphAttr(graph, QStringLiteral("nodesep"), QStringLiteral("0.5"));
+    setDotGraphAttr(graph, QStringLiteral("esep"), QStringLiteral("\"+12\""));
+    setDotGraphAttr(graph, QStringLiteral("newrank"), QStringLiteral("true"));
+
+    const QString engine = m_generator.toLower();
+    if (engine == QStringLiteral("neato") || engine == QStringLiteral("fdp")
+            || engine == QStringLiteral("sfdp")) {
+        setDotGraphAttr(graph, QStringLiteral("overlap"), QStringLiteral("false"));
+        setDotGraphAttr(graph, QStringLiteral("sep"), QStringLiteral("\"+18\""));
+        setDotGraphAttr(graph, QStringLiteral("splines"), QStringLiteral("true"));
+    } else if (engine == QStringLiteral("circo") || engine == QStringLiteral("twopi")) {
+        setDotGraphAttr(graph, QStringLiteral("overlap"), QStringLiteral("false"));
+        setDotGraphAttr(graph, QStringLiteral("splines"), QStringLiteral("true"));
+    }
+    if (m_classHierarchy)
+        setDotGraphAttr(graph, QStringLiteral("rankdir"), QStringLiteral("TB"));
+    if (!m_overrideSplines.isEmpty())
+        setDotGraphAttr(graph, QStringLiteral("splines"), m_overrideSplines);
+    m_dotParameters[QStringLiteral("graph")] = graph;
 
 #ifdef LAYOUTGENERATOR_DATA_DEBUG
     DEBUG() << m_edgeParameters;
@@ -431,6 +481,9 @@ bool DotGenerator::createDotFile(UMLScene *scene, const QString &fileName, const
         if (!findItem(params, QStringLiteral("height=")))
             params << QString::fromLatin1("height=\"%1\"").arg(widget->height()/m_scale);
 
+        if (!findItem(params, QStringLiteral("fixedsize=")))
+            params << QStringLiteral("fixedsize=true");
+
 #ifdef DOTGENERATOR_DATA_DEBUG
         DEBUG() << type << params;
 #endif
@@ -468,6 +521,11 @@ bool DotGenerator::createDotFile(UMLScene *scene, const QString &fileName, const
     }
 
     for(AssociationWidget *assoc : scene->associationList()) {
+        UMLWidget *roleA = assoc->widgetForRole(Uml::RoleType::A);
+        UMLWidget *roleB = assoc->widgetForRole(Uml::RoleType::B);
+        if (!roleA || !roleB || roleA->isTextWidget() || roleB->isTextWidget())
+            continue;
+
         QString type = Uml::AssociationType::toString(assoc->associationType()).toLower();
         QString key = QStringLiteral("type::") + type;
         bool swapId = false;
@@ -521,11 +579,43 @@ bool DotGenerator::createDotFile(UMLScene *scene, const QString &fileName, const
         if (!findItem(params, QStringLiteral("taillabel=")))
             params << QString::fromLatin1("taillabel=\"%1\"").arg(tailLabel);
 
+        const bool hierarchyEdge = (type == QStringLiteral("generalization")
+                                    || type == QStringLiteral("realization")
+                                    || type == QStringLiteral("realisation"));
+        const bool useHierarchy = m_classHierarchy
+                || (scene->type() == Uml::DiagramType::Class
+                    && m_generator.toLower() == QStringLiteral("dot"));
+        if (useHierarchy) {
+            for (int i = params.size() - 1; i >= 0; --i) {
+                if (params[i].startsWith(QStringLiteral("weight="))
+                        || params[i].startsWith(QStringLiteral("constraint="))
+                        || params[i].startsWith(QStringLiteral("minlen=")))
+                    params.removeAt(i);
+            }
+            if (hierarchyEdge) {
+                params << QStringLiteral("weight=12")
+                       << QStringLiteral("minlen=1")
+                       << QStringLiteral("constraint=true");
+            } else {
+                params << QStringLiteral("constraint=false")
+                       << QStringLiteral("weight=0.2");
+            }
+        }
+
 #ifdef DOTGENERATOR_DATA_DEBUG
         DEBUG() << type << params;
 #endif
-        QString aID = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(swapId ? Uml::RoleType::A : Uml::RoleType::B)));
-        QString bID = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(swapId ? Uml::RoleType::B : Uml::RoleType::A)));
+        // Role A = child, Role B = parent. Hierarchy edges must be parent -> child
+        // so rankdir=TB places the parent above concrete classes.
+        QString aID;
+        QString bID;
+        if (useHierarchy && hierarchyEdge) {
+            aID = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(Uml::RoleType::B)));
+            bID = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(Uml::RoleType::A)));
+        } else {
+            aID = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(swapId ? Uml::RoleType::A : Uml::RoleType::B)));
+            bID = fixID(Uml::ID::toString(assoc->widgetLocalIDForRole(swapId ? Uml::RoleType::B : Uml::RoleType::A)));
+        }
 
         out << "\"" << aID << "\" -> \"" << bID << "\"" << " [" << params.join(QStringLiteral(",")) << "];\n";
     }

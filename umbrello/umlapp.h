@@ -15,6 +15,7 @@
 
 // qt includes
 #include <QPointer>
+#include <QStringList>
 #include <QUrl>
 
 // forward declaration of the UML classes
@@ -40,6 +41,7 @@ class DiagramPrintPage;
 
 // KDE forward declarations
 class KActionMenu;
+class QActionGroup;
 class KRecentFilesAction;
 class KToggleAction;
 class KTabWidget;
@@ -89,6 +91,7 @@ public:
     ~UMLApp();
 
     void setup();
+    void applyDarkTheme();
 
     static UMLApp* app();
 
@@ -200,6 +203,9 @@ protected:
     void initActions();
     void initStatusBar();
     void initWidgets();
+    void updateAutoLayoutMenu();
+    void updateLineLayoutActions();
+    QString preferredAutoLayoutVariant() const;
 
     virtual bool queryClose();
 
@@ -251,6 +257,10 @@ public Q_SLOTS:
     void slotAlignHorizontalMiddle();
     void slotAlignVerticalDistribute();
     void slotAlignHorizontalDistribute();
+    void slotApplyAutoLayout();
+    void slotApplyAutoLayoutVariant();
+    void slotToggleLeftPane(bool show);
+    void slotAssociationLineLayout(QAction* action);
     void slotClipDataChanged();
     void slotCopyChanged();
     void slotPrefs(MultiPageDialogBase::PageType page = MultiPageDialogBase::GeneralPage);
@@ -387,6 +397,13 @@ private:
     QAction* editRedo;
 
     KActionMenu* newDiagram;
+    KActionMenu* applyAutoLayout;
+    KToggleAction* toggleLeftPane;
+    QAction* lineLayoutDirect;
+    QAction* lineLayoutOrthogonal;
+    QAction* lineLayoutSpline;
+    QAction* lineLayoutPolyline;
+    QActionGroup* lineLayoutGroup;
     QAction* viewClearDiagram;
 
     KToggleAction* viewSnapToGrid;
@@ -451,6 +468,7 @@ private:
     bool m_undoEnabled; ///< Undo enabled flag
 
     bool m_hasBegunMacro;  ///< Macro creation flag.
+    QStringList m_hiddenLeftDocks;
 
     QPointer<DiagramPrintPage> m_printSettings; ///< printer diagram settings
     QPrinter *m_printer;               ///< print instance

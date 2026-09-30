@@ -275,6 +275,8 @@ protected:
 
     void setSelectionBounds();
 
+    void syncAssociationNeon();
+
     void resize(QGraphicsSceneMouseEvent *me);
 
     bool wasSizeChanged();

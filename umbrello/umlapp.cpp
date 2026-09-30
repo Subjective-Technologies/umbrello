@@ -17,6 +17,7 @@
 #include "umlviewimageexporter.h"
 #include "umlviewimageexporterall.h"
 #include "docwindow.h"
+#include "layoutgenerator.h"
 #include "optionstate.h"
 #include "cmdlineexportallviewsevent.h"
 #include "umbrellosettings.h"
@@ -52,6 +53,7 @@
 #include "docbookgenerator.h"
 #include "xhtmlgenerator.h"
 #include "umlscene.h"
+#include "umlview.h"
 
 // kde includes
 #include <kactioncollection.h>
@@ -66,15 +68,18 @@
 #include <kxmlguifactory.h>
 
 // qt includes
+#include <QActionGroup>
 #include <QApplication>
 #include <QClipboard>
 #include <QDockWidget>
 #include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
+#include <QPalette>
 #include <QPointer>
 #include <QPrinter>
 #include <QPrintDialog>
@@ -84,11 +89,15 @@
 #include <QSlider>
 #include <QStatusBar>
 #include <QStackedWidget>
+#include <QStandardPaths>
+#include <QStyle>
+#include <QStyleFactory>
 #include <QTemporaryFile>
 #include <QTimer>
 #include <QToolButton>
 #include <QUndoStack>
 #include <QUndoView>
+#include <QVariantMap>
 
 #include <cmath>
 
@@ -149,6 +158,13 @@ UMLApp::UMLApp(QWidget* parent)
     editUndo(nullptr),
     editRedo(nullptr),
     newDiagram(nullptr),
+    applyAutoLayout(nullptr),
+    toggleLeftPane(nullptr),
+    lineLayoutDirect(nullptr),
+    lineLayoutOrthogonal(nullptr),
+    lineLayoutSpline(nullptr),
+    lineLayoutPolyline(nullptr),
+    lineLayoutGroup(nullptr),
     viewClearDiagram(nullptr),
     viewSnapToGrid(nullptr),
     viewShowGrid(nullptr),
@@ -250,6 +266,43 @@ void UMLApp::setup()
 
     setAutoSaveSettings();
     m_toolsbar->setToolButtonStyle(Qt::ToolButtonIconOnly);  // too many items for text, really we want a toolbox widget
+    applyDarkTheme();
+}
+
+void UMLApp::applyDarkTheme()
+{
+    QPalette p;
+    const QColor bg(0x12, 0x12, 0x14);
+    const QColor base(0x0a, 0x0a, 0x0c);
+    const QColor alt(0x1a, 0x1a, 0x1e);
+    const QColor text(0xe2, 0xe8, 0xf0);
+    const QColor btn(0x1e, 0x1e, 0x24);
+    const QColor hi(0x38, 0xb6, 0xff);
+    p.setColor(QPalette::Window, bg);
+    p.setColor(QPalette::WindowText, text);
+    p.setColor(QPalette::Base, base);
+    p.setColor(QPalette::AlternateBase, alt);
+    p.setColor(QPalette::Text, text);
+    p.setColor(QPalette::Button, btn);
+    p.setColor(QPalette::ButtonText, text);
+    p.setColor(QPalette::Highlight, hi);
+    p.setColor(QPalette::HighlightedText, Qt::black);
+    p.setColor(QPalette::ToolTipBase, btn);
+    p.setColor(QPalette::ToolTipText, text);
+    p.setColor(QPalette::Link, hi);
+    p.setColor(QPalette::BrightText, QColor(0xff, 0x6b, 0x6b));
+    p.setColor(QPalette::Light, QColor(0x3a, 0x3a, 0x42));
+    p.setColor(QPalette::Midlight, QColor(0x2a, 0x2a, 0x32));
+    p.setColor(QPalette::Dark, QColor(0x0a, 0x0a, 0x0c));
+    p.setColor(QPalette::Mid, QColor(0x18, 0x18, 0x1c));
+    p.setColor(QPalette::Shadow, Qt::black);
+    p.setColor(QPalette::PlaceholderText, QColor(0x64, 0x74, 0x8b));
+
+    QStyle *fusion = QStyleFactory::create(QStringLiteral("Fusion"));
+    if (fusion)
+        QApplication::setStyle(fusion);
+    qApp->setPalette(p);
+    setPalette(p);
 }
 
 /**
@@ -601,6 +654,65 @@ void UMLApp::initActions()
     alignHorizontalDistribute->setIcon(Icon_Utils::SmallIcon(Icon_Utils::it_Align_HorizontalDistribute));
     connect(alignHorizontalDistribute, SIGNAL(triggered(bool)), this, SLOT(slotAlignHorizontalDistribute()));
 
+    applyAutoLayout = actionCollection()->add<KActionMenu>(QStringLiteral("apply_auto_layout"));
+    applyAutoLayout->setText(i18n("Auto Layout"));
+    applyAutoLayout->setIcon(Icon_Utils::SmallIcon(Icon_Utils::it_Properties_AutoLayout));
+    applyAutoLayout->setToolTip(i18n("Automatically arrange widgets and association lines"));
+    applyAutoLayout->setDelayed(false);
+    connect(applyAutoLayout, SIGNAL(triggered(bool)), this, SLOT(slotApplyAutoLayout()));
+
+    toggleLeftPane = actionCollection()->add<KToggleAction>(QStringLiteral("view_toggle_left_pane"));
+    toggleLeftPane->setText(i18n("Left Pane"));
+    toggleLeftPane->setToolTip(i18n("Show or hide the tree view and documentation pane"));
+    toggleLeftPane->setIcon(QIcon::fromTheme(QStringLiteral("sidebar-collapse-left"),
+                Icon_Utils::SmallIcon(Icon_Utils::it_Properties_Display)));
+    toggleLeftPane->setChecked(true);
+    actionCollection()->setDefaultShortcut(toggleLeftPane, QKeySequence(Qt::CTRL | Qt::Key_L));
+    connect(toggleLeftPane, SIGNAL(toggled(bool)), this, SLOT(slotToggleLeftPane(bool)));
+
+    lineLayoutGroup = new QActionGroup(this);
+    lineLayoutGroup->setExclusive(true);
+    connect(lineLayoutGroup, SIGNAL(triggered(QAction*)), this, SLOT(slotAssociationLineLayout(QAction*)));
+
+    lineLayoutDirect = actionCollection()->addAction(QStringLiteral("line_layout_direct"));
+    lineLayoutDirect->setText(i18n("Direct Lines"));
+    lineLayoutDirect->setToolTip(i18n("Straight association lines"));
+    lineLayoutDirect->setIcon(Icon_Utils::SmallIcon(Icon_Utils::it_Association));
+    lineLayoutDirect->setCheckable(true);
+    lineLayoutDirect->setPriority(QAction::LowPriority);
+    lineLayoutDirect->setData(static_cast<int>(Uml::LayoutType::Direct));
+    lineLayoutGroup->addAction(lineLayoutDirect);
+
+    lineLayoutOrthogonal = actionCollection()->addAction(QStringLiteral("line_layout_orthogonal"));
+    lineLayoutOrthogonal->setText(i18n("Orthogonal Lines"));
+    lineLayoutOrthogonal->setToolTip(i18n("Right-angle association lines"));
+    lineLayoutOrthogonal->setIcon(Icon_Utils::SmallIcon(Icon_Utils::it_Align_HorizontalMiddle));
+    lineLayoutOrthogonal->setCheckable(true);
+    lineLayoutOrthogonal->setPriority(QAction::LowPriority);
+    lineLayoutOrthogonal->setData(static_cast<int>(Uml::LayoutType::Orthogonal));
+    lineLayoutGroup->addAction(lineLayoutOrthogonal);
+
+    lineLayoutSpline = actionCollection()->addAction(QStringLiteral("line_layout_spline"));
+    lineLayoutSpline->setText(i18n("Curved Lines"));
+    lineLayoutSpline->setToolTip(i18n("Spline / Bezier association lines"));
+    lineLayoutSpline->setIcon(Icon_Utils::SmallIcon(Icon_Utils::it_Anchor));
+    lineLayoutSpline->setCheckable(true);
+    lineLayoutSpline->setPriority(QAction::LowPriority);
+    lineLayoutSpline->setData(static_cast<int>(Uml::LayoutType::Spline));
+    lineLayoutGroup->addAction(lineLayoutSpline);
+
+    lineLayoutPolyline = actionCollection()->addAction(QStringLiteral("line_layout_polyline"));
+    lineLayoutPolyline->setText(i18n("Polyline"));
+    lineLayoutPolyline->setToolTip(i18n("Segmented association lines"));
+    lineLayoutPolyline->setIcon(Icon_Utils::SmallIcon(Icon_Utils::it_And_Line));
+    lineLayoutPolyline->setCheckable(true);
+    lineLayoutPolyline->setPriority(QAction::LowPriority);
+    lineLayoutPolyline->setData(static_cast<int>(Uml::LayoutType::Polyline));
+    lineLayoutGroup->addAction(lineLayoutPolyline);
+
+    updateLineLayoutActions();
+    updateAutoLayoutMenu();
+
     QString moveTabLeftString = i18n("&Move Tab Left");
     QString moveTabRightString = i18n("&Move Tab Right");
     QAction* moveTabLeft = actionCollection()->addAction(QStringLiteral("move_tab_left"));
@@ -662,30 +774,7 @@ void UMLApp::slotZoomFit()
 {
     if (currentView() == nullptr)
         return;
-    QRectF items = currentView()->umlScene()->itemsBoundingRect();
-    if (items.isNull()) {
-        setZoom(100);
-        return;
-    }
-    // TODO: QGraphicsView seems not to be informed about the scene rect update
-    currentView()->setSceneRect(items);
-
-    int scaleW = ceil(100.0 * currentView()->viewport()->width() / currentView()->umlScene()->width());
-    int scaleH = ceil(100.0 * currentView()->viewport()->height() / currentView()->umlScene()->height());
-    int scale = 100;
-    if (scaleW < scaleH) {
-        scale = scaleW;
-    }
-    else {
-        scale = scaleH;
-    }
-    if (scale < 0)
-        scale = 100;
-    else if (scale > 500)
-        scale = 500;
-    else
-        scale -= 2;
-    setZoom(scale);
+    currentView()->umlScene()->focusSelectedNeighborhood();
 }
 
 /**
@@ -1028,6 +1117,15 @@ void UMLApp::readOptions()
     QIcon redoIcon = QIcon::fromTheme(redoIconName);
     editRedo->setIcon(redoIcon);
     mainToolBar->addAction(editRedo);
+
+    mainToolBar->addSeparator();
+    mainToolBar->addAction(toggleLeftPane);
+    mainToolBar->addAction(applyAutoLayout);
+    mainToolBar->addSeparator();
+    mainToolBar->addAction(lineLayoutDirect);
+    mainToolBar->addAction(lineLayoutOrthogonal);
+    mainToolBar->addAction(lineLayoutSpline);
+    mainToolBar->addAction(lineLayoutPolyline);
 
     // do config for work toolbar
     m_toolsbar->applySettings(m_config->group(QStringLiteral("workbar")));
@@ -1720,6 +1818,229 @@ void UMLApp::slotAlignHorizontalDistribute()
     currentView()->umlScene()->alignHorizontalDistribute();
 }
 
+QString UMLApp::preferredAutoLayoutVariant() const
+{
+    UMLView *view = currentView();
+    if (!view)
+        return QStringLiteral("vertical");
+
+    QHash<QString, QString> configFiles;
+    LayoutGenerator::availableConfigFiles(view->umlScene(), configFiles);
+
+    const QStringList prefer = {
+        QStringLiteral("vertical"),
+        QStringLiteral("default"),
+        QStringLiteral("horizontal")
+    };
+    for (const QString &key : prefer) {
+        if (configFiles.contains(key))
+            return key;
+    }
+
+    QStringList keys = configFiles.keys();
+    keys.removeAll(QStringLiteral("export"));
+    keys.sort();
+    if (!keys.isEmpty())
+        return keys.first();
+    if (configFiles.contains(QStringLiteral("export")))
+        return QStringLiteral("export");
+    return QStringLiteral("vertical");
+}
+
+void UMLApp::updateAutoLayoutMenu()
+{
+    if (!applyAutoLayout)
+        return;
+
+    applyAutoLayout->menu()->clear();
+
+    QAction *def = applyAutoLayout->menu()->addAction(i18n("Auto Layout"));
+    def->setData(QVariantMap());
+    connect(def, SIGNAL(triggered(bool)), this, SLOT(slotApplyAutoLayout()));
+
+    UMLView *view = currentView();
+    LayoutGenerator generator;
+    if (!view || !generator.isEnabled())
+        return;
+
+    auto addAlgo = [this](const QString &title, const QString &engine,
+                          const QString &variant, const QString &splines = QString(),
+                          bool classHierarchy = false) {
+        if (!engine.isEmpty()) {
+            const QString path = QStandardPaths::findExecutable(engine);
+            if (path.isEmpty())
+                return;
+        }
+        QAction *action = applyAutoLayout->menu()->addAction(title);
+        QVariantMap data;
+        data.insert(QStringLiteral("engine"), engine);
+        data.insert(QStringLiteral("variant"), variant);
+        data.insert(QStringLiteral("splines"), splines);
+        data.insert(QStringLiteral("classHierarchy"), classHierarchy);
+        action->setData(data);
+        connect(action, SIGNAL(triggered(bool)), this, SLOT(slotApplyAutoLayoutVariant()));
+    };
+
+    applyAutoLayout->menu()->addSeparator();
+    if (view->umlScene() && view->umlScene()->type() == Uml::DiagramType::Class) {
+        addAlgo(i18n("Class diagram (inheritance)"), QStringLiteral("dot"), QStringLiteral("vertical"),
+                QString(), true);
+        addAlgo(i18n("Class diagram (orthogonal)"), QStringLiteral("dot"), QStringLiteral("vertical"),
+                QStringLiteral("ortho"), true);
+    }
+    addAlgo(i18n("Hierarchical (top → bottom)"), QStringLiteral("dot"), QStringLiteral("vertical"));
+    addAlgo(i18n("Hierarchical (left → right)"), QStringLiteral("dot"), QStringLiteral("horizontal"));
+    addAlgo(i18n("Orthogonal (hierarchical)"), QStringLiteral("dot"), QStringLiteral("vertical"),
+            QStringLiteral("ortho"));
+    addAlgo(i18n("Spring (neato)"), QStringLiteral("neato"), QStringLiteral("vertical"));
+    addAlgo(i18n("Force-directed (fdp)"), QStringLiteral("fdp"), QStringLiteral("vertical"));
+    addAlgo(i18n("Large graph (sfdp)"), QStringLiteral("sfdp"), QStringLiteral("vertical"));
+    addAlgo(i18n("Radial (twopi)"), QStringLiteral("twopi"), QStringLiteral("vertical"));
+    addAlgo(i18n("Circular (circo)"), QStringLiteral("circo"), QStringLiteral("vertical"));
+
+    QHash<QString, QString> configFiles;
+    if (!LayoutGenerator::availableConfigFiles(view->umlScene(), configFiles) || configFiles.isEmpty())
+        return;
+
+    QStringList keys = configFiles.keys();
+    keys.sort();
+    bool addedLegacy = false;
+    for (const QString &key : keys) {
+        if (key == QStringLiteral("export") &&
+                !Settings::optionState().autoLayoutState.showExportLayout)
+            continue;
+        if (!addedLegacy) {
+            applyAutoLayout->menu()->addSeparator();
+            addedLegacy = true;
+        }
+        QAction *action = applyAutoLayout->menu()->addAction(configFiles[key]);
+        QVariantMap data;
+        data.insert(QStringLiteral("variant"), key);
+        action->setData(data);
+        connect(action, SIGNAL(triggered(bool)), this, SLOT(slotApplyAutoLayoutVariant()));
+    }
+}
+
+void UMLApp::updateLineLayoutActions()
+{
+    if (!lineLayoutGroup)
+        return;
+    Uml::LayoutType::Enum layout = Settings::optionState().generalState.layoutType;
+    if (layout == Uml::LayoutType::Undefined)
+        layout = Uml::LayoutType::Polyline;
+    lineLayoutGroup->blockSignals(true);
+    switch (layout) {
+    case Uml::LayoutType::Direct:
+        lineLayoutDirect->setChecked(true);
+        break;
+    case Uml::LayoutType::Orthogonal:
+        lineLayoutOrthogonal->setChecked(true);
+        break;
+    case Uml::LayoutType::Spline:
+        lineLayoutSpline->setChecked(true);
+        break;
+    case Uml::LayoutType::Polyline:
+    default:
+        lineLayoutPolyline->setChecked(true);
+        break;
+    }
+    lineLayoutGroup->blockSignals(false);
+}
+
+void UMLApp::slotApplyAutoLayout()
+{
+    if (currentView() == nullptr)
+        return;
+    LayoutGenerator generator;
+    if (!generator.isEnabled()) {
+        KMessageBox::error(this, i18n("Auto layout needs Graphviz (the 'dot' program)."));
+        return;
+    }
+    const bool classDiag = currentView()->umlScene()->type() == Uml::DiagramType::Class;
+    currentView()->umlScene()->applyLayout(preferredAutoLayoutVariant(), QStringLiteral("dot"),
+                                           QString(), classDiag);
+    updateLineLayoutActions();
+}
+
+void UMLApp::slotApplyAutoLayoutVariant()
+{
+    if (currentView() == nullptr)
+        return;
+    QAction *action = qobject_cast<QAction*>(sender());
+    if (!action)
+        return;
+    QString engine;
+    QString variant;
+    QString splines;
+    bool classHierarchy = false;
+    const QVariant data = action->data();
+    if (data.type() == QVariant::Map) {
+        const QVariantMap map = data.toMap();
+        engine = map.value(QStringLiteral("engine")).toString();
+        variant = map.value(QStringLiteral("variant")).toString();
+        splines = map.value(QStringLiteral("splines")).toString();
+        classHierarchy = map.value(QStringLiteral("classHierarchy")).toBool();
+    } else {
+        variant = data.toString();
+    }
+    if (engine.isEmpty() && variant.isEmpty() && splines.isEmpty()) {
+        slotApplyAutoLayout();
+        return;
+    }
+    LayoutGenerator generator;
+    if (!generator.isEnabled()) {
+        KMessageBox::error(this, i18n("Auto layout needs Graphviz (the 'dot' program)."));
+        return;
+    }
+    currentView()->umlScene()->applyLayout(variant, engine, splines, classHierarchy);
+    updateLineLayoutActions();
+}
+
+void UMLApp::slotToggleLeftPane(bool show)
+{
+    QList<QDockWidget *> leftDocks;
+    const QList<QDockWidget *> docks = findChildren<QDockWidget *>();
+    for (QDockWidget *dock : docks) {
+        if (dockWidgetArea(dock) == Qt::LeftDockWidgetArea)
+            leftDocks.append(dock);
+    }
+    if (leftDocks.isEmpty())
+        return;
+
+    if (!show) {
+        m_hiddenLeftDocks.clear();
+        for (QDockWidget *dock : leftDocks) {
+            if (dock->isVisible()) {
+                m_hiddenLeftDocks.append(dock->objectName());
+                dock->hide();
+            }
+        }
+        return;
+    }
+
+    if (m_hiddenLeftDocks.isEmpty()) {
+        if (m_d->listDock)
+            m_d->listDock->show();
+        if (m_d->documentationDock)
+            m_d->documentationDock->show();
+        return;
+    }
+    for (QDockWidget *dock : leftDocks) {
+        if (m_hiddenLeftDocks.contains(dock->objectName()))
+            dock->show();
+    }
+}
+
+void UMLApp::slotAssociationLineLayout(QAction* action)
+{
+    if (!action || currentView() == nullptr)
+        return;
+    const Uml::LayoutType::Enum layout =
+        Uml::LayoutType::fromInt(action->data().toInt());
+    currentView()->umlScene()->applyAssociationLineLayout(layout);
+    updateLineLayoutActions();
+}
+
 /**
  * Returns the toolbar being used.
  *
@@ -2005,6 +2326,7 @@ void UMLApp::slotApplyPrefs()
         }
 
         m_doc->settingsChanged(optionState);
+        updateLineLayoutActions();
         const QString plStr = m_settingsDialog->getCodeGenerationLanguage();
         Uml::ProgrammingLanguage::Enum pl = Uml::ProgrammingLanguage::fromString(plStr);
         setGenerator(pl);
@@ -2543,10 +2865,17 @@ void UMLApp::setDiagramMenuItemsState(bool bState)
     deleteDiagram->setEnabled(bState);
     viewExportImage->setEnabled(bState);
     viewProperties->setEnabled(bState);
+    applyAutoLayout->setEnabled(bState);
+    lineLayoutDirect->setEnabled(bState);
+    lineLayoutOrthogonal->setEnabled(bState);
+    lineLayoutSpline->setEnabled(bState);
+    lineLayoutPolyline->setEnabled(bState);
     filePrint->setEnabled(bState);
     if (currentView()) {
         viewSnapToGrid->setChecked(currentView()->umlScene()->snapToGrid());
         viewShowGrid->setChecked(currentView()->umlScene()->isSnapGridVisible());
+        updateAutoLayoutMenu();
+        updateLineLayoutActions();
     }
 }
 
@@ -2693,6 +3022,8 @@ void UMLApp::slotCurrentViewChanged()
                 this, SLOT(slotShowGridToggled(bool)));
         connect(view->umlScene(), SIGNAL(sigSnapToGridToggled(bool)),
                 this, SLOT(slotSnapToGridToggled(bool)));
+        updateAutoLayoutMenu();
+        updateLineLayoutActions();
     }
 }
 

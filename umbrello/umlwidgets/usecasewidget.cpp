@@ -12,6 +12,7 @@
 #include "umlview.h"
 
 // qt includes
+#include <QPainterPath>
 #include <QXmlStreamWriter>
 
 DEBUG_REGISTER_DISABLED(UseCaseWidget)
@@ -79,6 +80,13 @@ void UseCaseWidget::paint(QPainter *painter, const QStyleOptionGraphicsItem *opt
     setPenFromSettings(painter);
 
     UMLWidget::paint(painter, option, widget);
+}
+
+QPainterPath UseCaseWidget::shape() const
+{
+    QPainterPath path;
+    path.addEllipse(QRectF(0, 0, width(), height()));
+    return path;
 }
 
 /**

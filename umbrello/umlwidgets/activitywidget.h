@@ -9,6 +9,8 @@
 #include "umlwidget.h"
 #include "worktoolbar.h"
 
+#include <QPainterPath>
+
 #define ACTIVITY_MARGIN 5
 #define ACTIVITY_WIDTH 30
 #define ACTIVITY_HEIGHT 10
@@ -83,6 +85,7 @@ public Q_SLOTS:
 protected:
     virtual QSizeF minimumSize() const;
     virtual QSizeF maximumSize();
+    virtual QPainterPath shape() const;
 
     ActivityType m_activityType; ///< Type of activity.
 

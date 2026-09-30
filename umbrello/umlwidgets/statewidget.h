@@ -9,6 +9,7 @@
 #include "umlwidget.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QStringList>
 
 #define STATE_MARGIN 5
@@ -57,6 +58,7 @@ public:
     virtual ~StateWidget();
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget = nullptr);
+    virtual QPainterPath shape() const;
 
     StateType stateType() const;
     QString stateTypeStr() const;

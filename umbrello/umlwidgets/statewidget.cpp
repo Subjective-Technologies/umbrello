@@ -24,6 +24,7 @@
 
 // qt includes
 #include <QtGlobal>
+#include <QPainterPath>
 #include <QPointer>
 #include <QXmlStreamWriter>
 
@@ -216,6 +217,40 @@ void StateWidget::paint(QPainter *painter, const QStyleOptionGraphicsItem *optio
     }
 
     UMLWidget::paint(painter, option, widget);
+}
+
+QPainterPath StateWidget::shape() const
+{
+    QPainterPath path;
+    const qreal w = width();
+    const qreal h = height();
+    switch (m_stateType) {
+    case StateWidget::Fork:
+    case StateWidget::Join:
+        path.addRect(rect());
+        break;
+    case StateWidget::Choice: {
+        QPolygonF diamond;
+        diamond << QPointF(w / 2, 0) << QPointF(w, h / 2)
+                << QPointF(w / 2, h) << QPointF(0, h / 2);
+        path.addPolygon(diamond);
+        path.closeSubpath();
+        break;
+    }
+    case StateWidget::Normal:
+    case StateWidget::Combined:
+        path.addRoundedRect(QRectF(0, 0, w, h), (h * 40) / qMax(w, qreal(1.0)), (w * 40) / qMax(h, qreal(1.0)));
+        break;
+    case StateWidget::Initial:
+    case StateWidget::End:
+    case StateWidget::Junction:
+    case StateWidget::DeepHistory:
+    case StateWidget::ShallowHistory:
+    default:
+        path.addEllipse(QRectF(0, 0, w, h));
+        break;
+    }
+    return path;
 }
 
 /**

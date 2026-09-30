@@ -23,6 +23,7 @@
 
 // qt includes
 #include <QPointer>
+#include <QPainterPath>
 #include <QXmlStreamWriter>
 
 DEBUG_REGISTER_DISABLED(ActivityWidget)
@@ -447,6 +448,36 @@ QSizeF ActivityWidget::maximumSize()
         return QSizeF(50, 50);
     }
     return QSizeF(30, 30);
+}
+
+QPainterPath ActivityWidget::shape() const
+{
+    QPainterPath path;
+    const qreal w = width();
+    const qreal h = height();
+    switch (m_activityType) {
+    case Branch: {
+        QPolygonF diamond;
+        diamond << QPointF(w / 2, 0) << QPointF(w, h / 2)
+                << QPointF(w / 2, h) << QPointF(0, h / 2);
+        path.addPolygon(diamond);
+        path.closeSubpath();
+        break;
+    }
+    case Initial:
+    case End:
+    case Final:
+        path.addEllipse(QRectF(0, 0, w, h));
+        break;
+    case Normal:
+    case Invok:
+    default: {
+        const qreal xRatio = qreal((h * 60.0) / qMax(w, qreal(1.0))) / 100.0;
+        path.addRoundedRect(QRectF(0, 0, w, h), xRatio, 0.6, Qt::RelativeSize);
+        break;
+    }
+    }
+    return path;
 }
 
 

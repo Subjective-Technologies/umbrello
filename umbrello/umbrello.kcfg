@@ -156,7 +156,7 @@
        <entry name="lineColor" type="Color">
          <label>Line Color</label>
          <whatsthis>The Color of the Lines</whatsthis>
-         <default>#990000</default>
+         <default>#94a3b8</default>
        </entry>
        <entry name="lineWidth" type="UInt">
          <label>Line Width</label>
@@ -166,7 +166,7 @@
        <entry name="textColor" type="Color">
          <label>Text Color</label>
          <whatsthis>The Color of the Text</whatsthis>
-         <default>black</default>
+         <default>#e2e8f0</default>
        </entry>
        <entry name="showDocWindow" type="Bool">
          <label>Show Doc Window</label>
@@ -181,17 +181,17 @@
        <entry name="backgroundColor" type="Color">
          <label>Background Color</label>
          <whatsthis>The Color of the diagram background</whatsthis>
-         <default>white</default>
+         <default>black</default>
        </entry>
        <entry name="useBackgroundColor" type="Bool">
          <label>Use background color</label>
          <whatsthis>Enables/Disables the usage of a custom background color</whatsthis>
-         <default>false</default>
+         <default>true</default>
        </entry>
        <entry name="gridDotColor" type="Color">
          <label>Grid Dot Color</label>
          <whatsthis>The Color of the grid dots</whatsthis>
-         <default>lightGray</default>
+         <default>#2a2a32</default>
        </entry>
        <entry name="useAlignmentGuides" type="Bool">
          <label>Use Alignment Guides</label>

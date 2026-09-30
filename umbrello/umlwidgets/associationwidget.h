@@ -14,6 +14,8 @@
 #include "umlwidgetlist.h"
 #include "widgetbase.h"
 
+#include <QPolygonF>
+
 class ClassifierWidget;
 class UMLScene;
 class UMLAssociation;
@@ -171,8 +173,10 @@ public:
     virtual void setTextColor(const QColor &color);
     virtual void setLineColor(const QColor &color);
     virtual void setLineWidth(uint width);
+    void setNeonGlowColor(const QColor &color) override;
 
     void calculateEndingPoints();
+    void snapEndsToWidgets();
 
     void clipSize();
 
@@ -223,8 +227,12 @@ private:
 
     static Uml::Region::Enum findPointRegion(const QRectF& rect, const QPointF& pos);
     static bool findIntercept(const QRectF& rect, const QPointF& point, QPointF& result);
+    static bool findIntercept(const QPolygonF& poly, const QPointF& from, QPointF& result);
     static QLineF::IntersectType intersect(const QRectF &rect, const QLineF &line,
                                            QPointF* intersectionPoint);
+    static QPolygonF sceneShapePolygon(UMLWidget *widget);
+    bool snapOneEnd(UMLWidget *widget, int endIndex, int inwardIndex);
+    void applyDefaultStroke();
 
     void moveEvent(QGraphicsSceneMouseEvent *me);
 

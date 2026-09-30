@@ -12,7 +12,9 @@
 #include "optionstate.h"
 #include "umlapp.h"
 #include "umldoc.h"
+#include "umlscene.h"
 #include "umlwidget.h"
+#include "widget_utils.h"
 
 // qt includes
 #include <QDomDocument>
@@ -419,13 +421,15 @@ QBrush AssociationLine::brush() const
 {
     QBrush brush(Qt::SolidPattern);
     Uml::AssociationType::Enum type = m_associationWidget->associationType();
+    const QColor neon = m_associationWidget->hasNeonGlow()
+            ? m_associationWidget->neonGlowColor() : QColor();
     if (type == Uml::AssociationType::Aggregation    ||
         type == Uml::AssociationType::Generalization ||
         type == Uml::AssociationType::Realization) {
-        brush.setColor(Qt::white);
+        brush.setColor(neon.isValid() ? neon : Qt::white);
     }
     if (type == Uml::AssociationType::Composition) {
-        brush.setColor(m_associationWidget->lineColor());
+        brush.setColor(neon.isValid() ? neon : m_associationWidget->lineColor());
     }
     return brush;
 }
@@ -801,7 +805,9 @@ QRectF AssociationLine::boundingRect() const
 {
     QPolygonF polygon(m_points);
     QRectF rect = polygon.boundingRect();
-    const qreal margin(5.0);
+    qreal margin = 5.0;
+    if (m_associationWidget && m_associationWidget->hasNeonGlow())
+        margin = 22.0;
     rect.adjust(-margin, -margin, margin, margin);
     return rect;
 }
@@ -1049,7 +1055,20 @@ void AssociationLine::paint(QPainter* painter, const QStyleOptionGraphicsItem* o
 
     painter->setPen(_pen);
     painter->setBrush(Qt::NoBrush);
-    painter->drawPath(path());
+    if (m_associationWidget && m_associationWidget->hasNeonGlow()) {
+        Widget_Utils::paintNeonGlow(painter, path(), m_associationWidget->neonGlowColor(),
+                                    qMax(_pen.widthF(), 1.6));
+    } else {
+        if (m_associationWidget && m_associationWidget->umlScene()
+            && m_associationWidget->umlScene()->backgroundColor().value() < 60
+            && _pen.color().value() < 90) {
+            _pen.setColor(Qt::white);
+        }
+        if (_pen.widthF() < 2.0)
+            _pen.setWidthF(2.0);
+        painter->setPen(_pen);
+        painter->drawPath(path());
+    }
 
     if (option->state & QStyle::State_Selected) {
         // make the association broader in the selected state

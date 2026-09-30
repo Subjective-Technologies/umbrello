@@ -24,7 +24,9 @@
 #include "selectoperationdialog.h"
 #include "umlapp.h"
 #include "umldoc.h"
+#include "umlscene.h"
 #include "umlview.h"
+#include "widget_utils.h"
 
 // kde includes
 #include <KLocalizedString>
@@ -628,7 +630,10 @@ void FloatingTextWidget::paint(QPainter *painter, const QStyleOptionGraphicsItem
     int w = width();
     int h = height();
     painter->setFont(UMLWidget::font());
-    painter->setPen(textColor());
+    QColor c = textColor();
+    if (m_scene && m_scene->backgroundColor().value() < 60 && c.value() < 90)
+        c = Widget_Utils::contrastOnDark(c);
+    painter->setPen(c);
     painter->drawText(0, 0, w, h, Qt::AlignCenter, displayText());
 
     UMLWidget::paint(painter, option, widget);

@@ -18,6 +18,8 @@
 #include "umlviewdialog.h"
 #include "umlwidget.h"
 
+#include <QApplication>
+#include <QContextMenuEvent>
 #include <QPointer>
 #include <QScrollBar>
 
@@ -27,12 +29,20 @@ DEBUG_REGISTER(UMLView)
  * Constructor.
  */
 UMLView::UMLView(UMLFolder *parentFolder)
-  : QGraphicsView(UMLApp::app()->mainViewWidget())
+  : QGraphicsView(UMLApp::app()->mainViewWidget()),
+    m_handPanning(false),
+    m_handPanMoved(false),
+    m_openContextMenuOnRelease(false),
+    m_handPanScroll()
 {
     setAcceptDrops(true);
-    setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+    setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform);
     setDragMode(NoDrag); //:TODO: RubberBandDrag);
+    setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
+    setOptimizationFlags(QGraphicsView::DontSavePainterState | QGraphicsView::DontAdjustForAntialiasing);
+    setCacheMode(QGraphicsView::CacheBackground);
     setScene(new UMLScene(parentFolder, this));
+    setBackgroundBrush(Qt::black);
     setResizeAnchor(AnchorUnderMouse);
     setTransformationAnchor(AnchorUnderMouse);
 }
@@ -72,10 +82,48 @@ void UMLView::setZoom(qreal zoom)
         zoom = 500;
     }
 
+    QPointF keepCenter;
+    const bool haveViewport = viewport() && viewport()->width() > 0 && viewport()->height() > 0;
+    if (haveViewport)
+        keepCenter = mapToScene(viewport()->rect().center());
+
     logDebug1("UMLView::setZoom %1", zoom);
     QTransform wm;
     wm.scale(zoom / 100.0, zoom / 100.0);
     setTransform(wm);
+    if (haveViewport)
+        centerOn(keepCenter);
+}
+
+void UMLView::fitSceneRect(const QRectF &sceneRect, qreal minZoom, const QPointF *preferCenter)
+{
+    if (!viewport() || !sceneRect.isValid() || sceneRect.isEmpty())
+        return;
+
+    const QSize vp = viewport()->size();
+    if (vp.width() < 8 || vp.height() < 8)
+        return;
+
+    const qreal pad = qMax(48.0, qMax(sceneRect.width(), sceneRect.height()) * 0.08);
+    const QRectF padded = sceneRect.normalized().adjusted(-pad, -pad, pad, pad);
+    if (padded.width() < 1.0 || padded.height() < 1.0)
+        return;
+
+    qreal z = qMin(100.0 * vp.width() / padded.width(),
+                   100.0 * vp.height() / padded.height());
+    z *= 0.96;
+    const bool clamped = (z < minZoom);
+    if (z < minZoom)
+        z = minZoom;
+    else if (z > 500.0)
+        z = 500.0;
+
+    setZoom(z);
+    if (clamped && preferCenter)
+        centerOn(*preferCenter);
+    else
+        centerOn(padded.center());
+    UMLApp::app()->setZoom(qRound(z), false);
 }
 
 /**
@@ -183,30 +231,110 @@ void UMLView::hideEvent(QHideEvent* he)
 
 /**
  * Override standard method.
+ * Middle or right button drag pans the diagram with a grab-hand cursor.
+ * A right click without a drag still opens the context menu.
  */
 void UMLView::mousePressEvent(QMouseEvent* event)
 {
-    if (event->button() == Qt::MiddleButton) {
-        setDragMode(QGraphicsView::ScrollHandDrag);
-        setInteractive(false);
-        QMouseEvent fake(event->type(), event->pos(), Qt::LeftButton, Qt::LeftButton, event->modifiers());
-        QGraphicsView::mousePressEvent(&fake);
-    } else
-        QGraphicsView::mousePressEvent(event);
+    if (event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+        beginHandPan(event);
+        event->accept();
+        return;
+    }
+    QGraphicsView::mousePressEvent(event);
 }
 
-/**
- * Override standard method.
- */
+void UMLView::mouseMoveEvent(QMouseEvent* event)
+{
+    if (m_handPanning) {
+        const QPoint delta = event->pos() - m_handPanStart;
+        if (delta.manhattanLength() >= QApplication::startDragDistance())
+            m_handPanMoved = true;
+        viewport()->setCursor(Qt::ClosedHandCursor);
+        if (horizontalScrollBar())
+            horizontalScrollBar()->setValue(m_handPanScroll.x() - delta.x());
+        if (verticalScrollBar())
+            verticalScrollBar()->setValue(m_handPanScroll.y() - delta.y());
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseMoveEvent(event);
+}
+
 void UMLView::mouseReleaseEvent(QMouseEvent* event)
 {
-    if (event->button() == Qt::MiddleButton) {
-        QMouseEvent fake(event->type(), event->pos(), Qt::LeftButton, Qt::LeftButton, event->modifiers());
-        QGraphicsView::mouseReleaseEvent(&fake);
-        setInteractive(true);
-        setDragMode(QGraphicsView::NoDrag);
-    } else
-        QGraphicsView::mouseReleaseEvent(event);
+    if (m_handPanning && (event->button() == Qt::MiddleButton || event->button() == Qt::RightButton)) {
+        endHandPan(event);
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseReleaseEvent(event);
+}
+
+void UMLView::expandSceneRectForPan()
+{
+    UMLScene *s = umlScene();
+    if (!s)
+        return;
+    const QRectF bounds = s->itemsBoundingRect();
+    if (!bounds.isValid())
+        return;
+    qreal padX = 400.0;
+    qreal padY = 400.0;
+    if (viewport() && viewport()->width() > 0 && viewport()->height() > 0) {
+        const QRectF vp = mapToScene(viewport()->rect()).boundingRect();
+        padX = qMax(padX, vp.width());
+        padY = qMax(padY, vp.height());
+    }
+    s->setSceneRect(bounds.adjusted(-padX, -padY, padX, padY));
+}
+
+void UMLView::beginHandPan(QMouseEvent* event)
+{
+    m_handPanning = true;
+    m_handPanMoved = false;
+    m_openContextMenuOnRelease = (event->button() == Qt::RightButton);
+    m_handPanStart = event->pos();
+    // Expand first — setSceneRect changes scrollbar range/value.
+    expandSceneRectForPan();
+    m_handPanScroll = QPoint(horizontalScrollBar() ? horizontalScrollBar()->value() : 0,
+                             verticalScrollBar() ? verticalScrollBar()->value() : 0);
+    viewport()->setCursor(Qt::ClosedHandCursor);
+    viewport()->grabMouse();
+    setInteractive(false);
+    setRenderHint(QPainter::Antialiasing, false);
+    setRenderHint(QPainter::SmoothPixmapTransform, false);
+}
+
+void UMLView::endHandPan(QMouseEvent* event)
+{
+    if (QWidget::mouseGrabber() == viewport())
+        viewport()->releaseMouse();
+    setInteractive(true);
+    setRenderHint(QPainter::Antialiasing, true);
+    setRenderHint(QPainter::SmoothPixmapTransform, true);
+    viewport()->unsetCursor();
+
+    const bool showMenu = m_openContextMenuOnRelease && !m_handPanMoved;
+    m_handPanning = false;
+    m_handPanMoved = false;
+    m_openContextMenuOnRelease = false;
+
+    if (showMenu) {
+        QContextMenuEvent menuEvent(QContextMenuEvent::Mouse, event->pos(), event->globalPos());
+        QGraphicsView::contextMenuEvent(&menuEvent);
+    }
+}
+
+void UMLView::contextMenuEvent(QContextMenuEvent* event)
+{
+    // Qt sends this on right-press. Swallow while panning; click-without-drag
+    // still opens the menu from endHandPan().
+    if (m_handPanning || m_openContextMenuOnRelease) {
+        event->accept();
+        return;
+    }
+    QGraphicsView::contextMenuEvent(event);
 }
 
 /**
